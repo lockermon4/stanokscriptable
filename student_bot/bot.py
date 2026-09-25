@@ -316,6 +316,16 @@ async def main() -> None:
     bot = Bot(settings.bot_token)
     dp = Dispatcher()
     setup_logging()
+    try:  # revision marker: tracebacks show file paths, this line shows WHICH copy runs
+        import subprocess as _sp
+
+        _rev = _sp.check_output(["git", "rev-parse", "--short", "HEAD"],
+                                text=True, stderr=_sp.DEVNULL).strip()
+    except Exception:
+        _rev = "unknown"
+    import logging as _logging
+
+    _logging.getLogger("bot").info("starting, code rev=%s", _rev)
     send_stats = install_send_logging(bot)  # SEND/EDIT lines + session counters
     dp.message.middleware(SendLogMiddleware())
     dp.callback_query.middleware(SendLogMiddleware())
