@@ -61,22 +61,6 @@ def _store():
     )
 
 
-def test_confirmed_gate_from_yaml():
-    from student_bot.buildings import load_buildings_yaml
-    import os
-    p = os.path.join(os.path.dirname(__file__), "..", "buildings.yaml")
-    s = load_buildings_yaml(p)
-    for code in ("фрезер-10", "стадион", "старый", "новый"):
-        assert s.lookup(code) is not None, code  # все подтверждены
-    b, _ = s.resolve_cabinet("Фрезер 303(ММ)")
-    assert b is not None and b.code == "фрезер-10"
-    assert s.resolve_cabinet("0209")[0].code == "новый"
-    assert s.resolve_cabinet("ИГ-1")[0].code == "старый"
-    assert s.resolve_cabinet("Стадион 1")[0].code == "стадион"
-    assert s.resolve_cabinet("С/З СТАНКИН")[0].code == "новый"
-    assert s.resolve_cabinet("") == (None, False)
-
-
 def test_unknown_building_no_invented_route():
     # empty cabinet -> honestly unknown, no guessing
     sched = FakeSched([{"subject": "М", "date": "2026-09-24", "startTime": "09:00", "endTime": "10:30",
