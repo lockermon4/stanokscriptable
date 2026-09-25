@@ -99,6 +99,15 @@ def start_back(lang: str) -> str:
     return "Welcome back! 👋" if lang == EN else "С возвращением! 👋"
 
 
+def main_menu_text(lang: str) -> str:
+    """Главное меню после выхода из подраздела (кнопка «Назад»)."""
+    if lang == EN:
+        return ("🏠 Main menu — pick an action below:\n"
+                "📅 Today · 🗓 Tomorrow · 🚪 When to leave · 📝 Notes · ⚙️ Settings")
+    return ("🏠 Главное меню — выберите действие кнопками ниже:\n"
+            "📅 Сегодня · 🗓 Завтра · 🚪 Когда выходить · 📝 Заметки · ⚙️ Настройки")
+
+
 def start_need_home(lang: str, group: str) -> str:
     if lang == EN:
         return (f"Welcome back! Your group is {group}. One step left: add your home "
@@ -130,10 +139,10 @@ def need_group_first(lang: str) -> str:
 
 def need_home(lang: str) -> str:
     if lang == EN:
-        return ("Add your home address first: type it (e.g. \"ul. Ostrovityanova, 33А\") "
+        return ("Add your home address first: type it (e.g. \"ul. Vadkovskii pereulok, 3\") "
                 "or send a location pin (📎 → Location). I can't calculate the exit time without it.")
     return ("Сначала добавьте домашний адрес: напишите его текстом "
-            "(например, «ул. Островитянова, 33А») или отправьте точку "
+            "(например, «ул. Вадковский переулок, 1») или отправьте точку "
             "(скрепка → Геопозиция). Без него время выхода посчитать не выйдет.")
 
 

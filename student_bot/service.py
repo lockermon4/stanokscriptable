@@ -7,6 +7,7 @@ Honest failure modes (no invented times):
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -111,9 +112,18 @@ async def build_day_view(
 ) -> DayView:
     tz = ZoneInfo(settings.institution_tz)
     day_iso = day.strftime(settings.schedule_date_format)
+    # Schedule JSON and home geocode are independent -> run in parallel.
+    # If the schedule fails we cancel the stray geocode (no wasted work,
+    # no extra latency on the schedule_failed path).
+    sched_task = asyncio.ensure_future(schedule_client.get_day_raw(group, day_iso))
+    geo_task = None
+    if home_coords is None and home_address.strip():
+        geo_task = asyncio.ensure_future(geocoder.geocode(home_address))
     try:
-        raw = await schedule_client.get_day_raw(group, day_iso)
+        raw = await sched_task
     except Exception:
+        if geo_task is not None:
+            geo_task.cancel()
         empty = DaySchedule(day=day, group=group, lessons=())
         return DayView(schedule=empty, skipped=0, target=None, plan=None, schedule_failed=True)
     schedule, skipped = normalize_day(raw, group=group, day=day, tz_name=settings.institution_tz)
@@ -137,7 +147,7 @@ async def build_day_view(
     if foot is None:
         foot = router
     try:
-        from_xy = home_coords or (await geocoder.geocode(home_address) if home_address.strip() else None)
+        from_xy = home_coords or (await geo_task if geo_task is not None else None)
         # Verified building coords (buildings.yaml) skip geocoding entirely.
         to_xy = (b.lat, b.lon) if b.lat is not None and b.lon is not None else await geocoder.geocode(dest_addr)
         if not from_xy or not to_xy:

@@ -26,6 +26,7 @@ from .notifications import morning_notify_time, parse_hhmm
 from .routing_foot import FosFootProvider
 from .routing_osrm import OsrmProvider
 from .schedule_client import ScheduleClient
+from .sendlog import SendLogMiddleware, install_send_logging, setup_logging
 from .service import build_day_view
 from .store import Store, UserSettings
 from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMORROW,
@@ -33,7 +34,7 @@ from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMO
                      ask_morning_lead, ask_new_address, ask_new_group, ask_note_date,
                      ask_note_text, ask_notify, ask_transport, buffer_buttons, cancel_buttons,
                      evening_buttons, lang_buttons,
-                     menu_kb, menu_match, morning_lead_buttons, need_group_first, need_home, norm_lang,
+                     main_menu_text, menu_kb, menu_match, morning_lead_buttons, need_group_first, need_home, norm_lang,
                      note_card, note_confirm_delete, note_date_buttons, note_deleted, note_item_buttons,
                      note_saved, notes_menu_buttons, notes_menu_text, notify_menu_buttons,
                      addr_saved_new, recalc_failed, settings_buttons, settings_view,
@@ -96,6 +97,26 @@ def home_coords_of(u: UserSettings) -> tuple[float, float] | None:
     if u.home_lat is not None and u.home_lon is not None:
         return (u.home_lat, u.home_lon)
     return None
+
+
+async def show_main_menu(target: Message | CallbackQuery, lang: str) -> None:
+    """После «Назад»/выхода из подраздела — вернуть главное меню, а не голый экран.
+    Наше меню — reply-клавиатура (kb_for): она постоянна, но сообщение раздела
+    надо закрыть осмысленно. Callback -> правим текущее сообщение (снимаем
+    инлайн-кнопки); править нечего/не вышло -> шлём новое с клавиатурой."""
+    text = main_menu_text(lang)
+    msg = target.message if isinstance(target, CallbackQuery) else None
+    if msg is not None:
+        try:
+            await msg.edit_text(text, reply_markup=None)
+            return
+        except Exception:
+            pass
+        await msg.answer(text, reply_markup=kb_for(lang))
+        return
+    if isinstance(target, CallbackQuery):
+        return  # показать негде; спиннер снимает вызывающий код
+    await target.answer(text, reply_markup=kb_for(lang))
 
 
 def day_exit_line(view, lang: str = "ru") -> str:
@@ -294,6 +315,10 @@ async def main() -> None:
 
     bot = Bot(settings.bot_token)
     dp = Dispatcher()
+    setup_logging()
+    send_stats = install_send_logging(bot)  # SEND/EDIT lines + session counters
+    dp.message.middleware(SendLogMiddleware())
+    dp.callback_query.middleware(SendLogMiddleware())
     pending: dict[int, str] = {}  # user_id -> expected input state
 
     @dp.message(Command("start"))
@@ -659,12 +684,6 @@ async def main() -> None:
             except Exception:
                 await cb.message.answer(text, reply_markup=reply_markup)
 
-        async def safe_delete() -> None:
-            try:
-                await cb.message.delete()
-            except Exception:
-                pass
-
         async def edit_settings(extra: str = "") -> None:
             u = fresh()
             card = settings_card(u)
@@ -701,7 +720,7 @@ async def main() -> None:
             pending.pop(uid, None)
             addr_picks.pop(uid, None)
             note_tmp.pop(uid, None)
-            await safe_delete()
+            await show_main_menu(cb, fresh().lang)
             return
 
         # --- settings ---
@@ -709,7 +728,7 @@ async def main() -> None:
             await edit_settings()
             return
         if data == "set:back":
-            await safe_delete()
+            await show_main_menu(cb, fresh().lang)
             return
         if data == "set:group":
             pending[uid] = "group"
@@ -790,7 +809,7 @@ async def main() -> None:
             await safe_edit(notes_menu_text(u.lang), notes_menu_buttons(u.lang))
             return
         if data == "note:back":
-            await safe_delete()
+            await show_main_menu(cb, fresh().lang)
             return
         if data == "note:add":
             u = fresh()

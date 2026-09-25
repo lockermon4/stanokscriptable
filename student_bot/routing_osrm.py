@@ -10,6 +10,7 @@ Self-host OSRM via OSRM_BASE for production.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import httpx
@@ -43,12 +44,21 @@ class OsrmProvider:
             profile = "foot"  # honest fallback, flagged approximate
         (flon, flat), (tlon, tlat) = from_lonlat, to_lonlat
         url = f"{self.s.osrm_base}/route/v1/{profile}/{flon},{flat};{tlon},{tlat}"
-        try:
-            r = await self._http.get(url, params={"overview": "false"})
-            r.raise_for_status()
-            data = r.json()
-        except Exception as e:
-            raise RuntimeError(f"OSRM request failed: {e}") from e
+        last: Exception | None = None
+        data: dict | None = None
+        for attempt in (0, 1, 2):  # retry transport-level failures only (same policy as schedule client)
+            try:
+                r = await self._http.get(url, params={"overview": "false"})
+                r.raise_for_status()
+                data = r.json()
+                break
+            except (httpx.TransportError, httpx.TimeoutException) as e:
+                last = e
+                await asyncio.sleep(0.5 * (attempt + 1))
+            except Exception as e:
+                raise RuntimeError(f"OSRM request failed: {e}") from e
+        if data is None:
+            raise RuntimeError(f"OSRM request failed after retries: {last}")
         if data.get("code") != "Ok" or not data.get("routes"):
             raise RuntimeError(f"OSRM no route: {data.get('code')}")
         secs = int(float(data["routes"][0]["duration"]))

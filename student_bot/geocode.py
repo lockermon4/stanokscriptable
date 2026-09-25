@@ -44,6 +44,15 @@ class DualGeocoder:
             await asyncio.sleep(wait)
         self._last[key] = time.monotonic()
 
+    async def _with_retry(self, fn, key: str):
+        """One retry on transport-level failures (flaky TLS/timeouts);
+        HTTP statuses are handled by the caller (403/429 -> fallback)."""
+        try:
+            return await fn(key)
+        except (httpx.TransportError, httpx.TimeoutException):
+            await asyncio.sleep(1.0)
+            return await fn(key)
+
     async def _nominatim(self, q: str) -> tuple[float, float] | None:
         await self._throttle("nominatim")
         r = await self._http.get(
@@ -83,7 +92,7 @@ class DualGeocoder:
         errors: list[str] = []
         for name, fn in (("nominatim", self._nominatim), ("photon", self._photon)):
             try:
-                res = await fn(key)
+                res = await self._with_retry(fn, key)
                 if res is not None:
                     self._cache[key] = res
                     return res

@@ -41,6 +41,11 @@ class ScheduleClient:
     def __init__(self, settings: Settings, http: httpx.AsyncClient | None = None):
         self.s = settings
         self._http = http or httpx.AsyncClient(timeout=15.0)
+        # In-memory TTL cache for day/range JSON: the scheduler loop asks for
+        # today's schedule every 60 s per user and every menu press refetches —
+        # a fixed day's timetable effectively never changes within minutes.
+        self._day: dict[tuple[str, str, str], tuple[float, object]] = {}
+        self._day_ttl = getattr(settings, "schedule_day_ttl_s", 900)
 
     def _url(self, path: str) -> str:
         if not self.s.schedule_api_base:
@@ -100,6 +105,10 @@ class ScheduleClient:
         return await self.get_range_raw(group, day_iso, day_iso)
 
     async def get_range_raw(self, group: str, start_iso: str, end_iso: str) -> object:
+        key = (group, start_iso, end_iso)
+        hit = self._day.get(key)
+        if hit and time.monotonic() - hit[0] < self._day_ttl:
+            return hit[1]
         try:
             r = await _get_with_retry(
                 self._http,
@@ -114,7 +123,9 @@ class ScheduleClient:
             if r.status_code == 204 or not (r.text or "").strip():
                 return {"items": []}  # empty day (verified 2026-09-27: 204, no body)
             r.raise_for_status()
-            return r.json()
+            payload = r.json()
+            self._day[key] = (time.monotonic(), payload)
+            return payload
         except ScheduleApiError:
             raise
         except Exception as e:
