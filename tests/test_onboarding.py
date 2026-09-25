@@ -28,10 +28,10 @@ def test_start_back_and_partial():
 
 def test_settings_human_no_dump():
     ru = settings_view("ИДБ-26-14", "Москва, ул. Островитянова, д. 33А",
-                       "transit", 10, "21:00", 60, "ru")
-    assert "Группа: ИДБ-26-14" in ru and "Способ передвижения: общественный транспорт" in ru
+                       "metro", 10, "21:00", 60, "ru")
+    assert "Группа: ИДБ-26-14" in ru and "Способ передвижения: на метро" in ru
     assert "Запас: 10 минут" in ru and "группа=" not in ru and "transport=" not in ru
-    en = settings_view("ИДБ-26-14", "Moscow", "foot", 1, "21:00", 60, "en")
+    en = settings_view("ИДБ-26-14", "Moscow", "walk", 1, "21:00", 60, "en")
     assert "Group: ИДБ-26-14" in en and "Transport: on foot" in en and "Buffer: 1 minute" in en
 
 
@@ -68,4 +68,5 @@ def test_cards_english():
     assert t.startswith("🌙 Tomorrow — 1 class") and "room 0209" in t and "Take: coat" in t
     t2 = format_telegram_morning(build_morning(les, None, route_failed=True), "en")
     assert "Couldn't calculate" in t2 and "Выйти" not in t2
-    assert transport_name("transit", "en") == "public transit"
+    assert transport_name("transit", "en") == "by metro"  # legacy мигрирует
+    assert transport_name("walk", "ru") == "пешком"

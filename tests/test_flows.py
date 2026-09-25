@@ -104,7 +104,7 @@ def test_focus_no_route_is_honest():
 # ---------- кнопки: русские метки, callback-data, без дампа команд ----------
 
 def test_settings_view_no_command_dump():
-    ru = settings_view("ИДБ-26-14", "Дом", "transit", 10, "21:00", 60, "ru")
+    ru = settings_view("ИДБ-26-14", "Дом", "metro", 10, "21:00", 60, "ru")
     assert "кнопки ниже" in ru and "адрес <текст>" not in ru and "группа=" not in ru
 
 
@@ -121,7 +121,8 @@ def test_settings_buttons_labels_and_callbacks():
 
 
 def test_option_buttons_callbacks():
-    assert "tr:foot" in [b.callback_data for row in transport_buttons("ru").inline_keyboard for b in row]
+    datas = [b.callback_data for row in transport_buttons("ru").inline_keyboard for b in row]
+    assert "tr:walk" in datas and "tr:metro" in datas and "tr:foot" not in datas
     assert "buf:15" in [b.callback_data for row in buffer_buttons("ru").inline_keyboard for b in row]
     assert "ntf:eve:21:00" in [b.callback_data for row in evening_buttons("ru").inline_keyboard for b in row]
     assert "ntf:morn:60" in [b.callback_data for row in morning_lead_buttons("ru").inline_keyboard for b in row]

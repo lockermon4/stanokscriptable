@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, ReplyKeyboardMark
 
 from student_bot.bot import show_main_menu
 from student_bot.config import Settings
-from student_bot.routing_osrm import OsrmProvider
+from student_bot.routing import TwoGisRouting
 from student_bot.schedule_client import ScheduleClient
 from student_bot.sendlog import SendLogMiddleware, SendStats, install_send_logging, setup_logging
 from student_bot.service import build_day_view
@@ -210,24 +210,30 @@ def test_build_day_view_cancels_geocode_on_schedule_fail():
     t0 = _t.monotonic()
     view = run(build_day_view(
         settings=S, schedule_client=FailSchedule(), buildings=object(),
-        geocoder=geo, router=object(), group="G", day=datetime(2026, 9, 28).date(),
+        geocoder=geo, group="G", day=datetime(2026, 9, 28).date(),
         now=datetime(2026, 9, 28, 7, 0, tzinfo=TZ), home_address="Москва, Тверская, 1",
-        transport="transit", buffer_min=10, for_today=True))
+        transport="metro", buffer_min=10, for_today=True))
     dt = _t.monotonic() - t0
     assert view.schedule_failed and dt < 4  # 5-секундный геокод не ждём: отмена работает
 
 
 # ---------- OSRM retry: два обрыва -> успех с третьей ----------
 
-def test_osrm_retries_transport_errors():
+def test_gis_retries_transport_errors(monkeypatch):
+    from student_bot import routing as R
     calls = []
 
     def h(req):
         calls.append(1)
         if len(calls) < 3:
             raise httpx.ConnectError("boom")
-        return httpx.Response(200, json={"code": "Ok", "routes": [{"duration": 123.4}]})
+        return httpx.Response(200, json={"routes": []})
 
-    r = OsrmProvider(S, http=httpx.AsyncClient(transport=httpx.MockTransport(h)))
-    res = run(r.route((37.0, 55.0), (37.5, 55.7), "driving"))
-    assert res.travel_seconds == 123 and len(calls) == 3
+    def fake_parse(payload):
+        from student_bot.routing import RouteOption
+        return [RouteOption(mode="walk", duration_s=100, summary="x")]
+
+    monkeypatch.setattr(R, "parse_walk_payload", fake_parse)
+    r = TwoGisRouting(api_key="k", http=httpx.AsyncClient(transport=httpx.MockTransport(h)))
+    res = run(r.walking((55.0, 37.0), (55.7, 37.5)))
+    assert res[0].duration_s == 100 and len(calls) == 3

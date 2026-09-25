@@ -1,19 +1,15 @@
-"""Final-assembly tests: candidate search, no double count, store persistence,
+"""Final-assembly tests: 2GIS option mapping, favorites CRUD, store persistence,
 geocoder fallback, foot provider, notes CRUD, sent-flags."""
 import asyncio
-import os
 
 import httpx
-import pytest
 
 from student_bot.config import Settings
 from student_bot.geocode import DualGeocoder
-from student_bot.metro import MetroGraph
 from student_bot.routing_foot import FosFootProvider
-from student_bot.service import _door_to_door_transit
-from student_bot.store import Store, UserSettings
+from student_bot.service import option_to_route
+from student_bot.store import Favorite, Store, UserSettings
 
-DATA = os.path.join(os.path.dirname(__file__), "..", "data", "metro_moscow.json")
 S = Settings()
 
 
@@ -21,68 +17,44 @@ def run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
-class ScriptFoot:
-    """foot_seconds from a script {(a_lon,a_lat,b_lon,b_lat rounded): secs}."""
-
-    def __init__(self, mapping, default=600):
-        self.m = mapping
-        self.default = default
-        self.calls = 0
-
-    async def foot_seconds(self, a, b):
-        self.calls += 1
-        k = (round(a[0], 3), round(a[1], 3), round(b[0], 3), round(b[1], 3))
-        return self.m.get(k, self.default)
+def test_option_to_route_first_option_drives_exit():
+    from student_bot.routing import RouteOption
+    opt = RouteOption(mode="metro", duration_s=1260, distance_m=8000, transfers=1,
+                      walk_before_s=300, walk_after_s=240, summary="21 мин, 1 пересадка")
+    r = option_to_route(opt)
+    assert r.travel_seconds == 1260 and r.provider == "2gis" and r.is_approximate is False
 
 
-def _real():
-    if not os.path.exists(DATA):
-        pytest.skip("no metro data file")
-    return MetroGraph.load(DATA)
+def test_favorites_crud_and_user_scoping(tmp_path):
+    p = str(tmp_path / "f.sqlite3")
+    s = Store(p)
+    fid = s.add_favorite(7, "Дом → СТАНКИН", "55.63,37.52", "55.79,37.59", "metro")
+    assert fid > 0
+    s.add_favorite(7, "Дом → Фрезер", "55.63,37.52", "55.73,37.73", "walk")
+    favs = s.list_favorites(7)
+    assert [(f.name, f.transport_type) for f in favs] == [
+        ("Дом → СТАНКИН", "metro"), ("Дом → Фрезер", "walk")]
+    assert favs[0].from_coords == "55.63,37.52" and isinstance(favs[0], Favorite)
+    assert s.list_favorites(8) == []  # чужое не видно
+    assert s.delete_favorite(7, fid) is True
+    assert [f.name for f in s.list_favorites(7)] == ["Дом → Фрезер"]
+    assert s.delete_favorite(7, fid) is False  # повторное удаление
+    assert s.delete_favorite(8, favs[1].id) is False  # чужое не удаляется
+    s2 = Store(p)  # рестарт: переживает
+    assert [f.name for f in s2.list_favorites(7)] == ["Дом → Фрезер"]
 
 
-def _st(g, name):
-    return next(s for s in g.stations if s.name == name)
-
-
-def test_candidate_search_picks_min_total():
-    g = _real()
-    konk = _st(g, "Коньково")
-    sav = _st(g, "Савёловская")
-    men = _st(g, "Менделеевская")
-    home = (konk.lat + 0.001, konk.lon + 0.001)
-    dest = (sav.lat + 0.001, sav.lon - 0.001)
-    # Make Mendeleevskaya egress artificially long so Savelyovskaya must win.
-    async def foot(a, b):
-        from student_bot.metro import haversine_m
-        base = haversine_m(a[1], a[0], b[1], b[0]) / 1.33
-        if abs(b[0] - men.lon) < 0.002 and abs(b[1] - men.lat) < 0.002:
-            return int(base + 3600)
-        return int(base)
-
-    class F:
-        async def foot_seconds(self, a, b):
-            return await foot(a, b)
-
-    route, summary = run(_door_to_door_transit(F(), g, home, dest, n_each=2))
-    assert "Савёловская" in summary and "Менделеевская" not in summary.split("→")[0]
-
-
-def test_no_double_count_legs_sum_equals_total():
-    g = _real()
-    konk = _st(g, "Коньково")
-    sav = _st(g, "Савёловская")
-    home = (konk.lat + 0.001, konk.lon + 0.001)
-    dest = (sav.lat + 0.001, sav.lon - 0.001)
-
-    class F:
-        async def foot_seconds(self, a, b):
-            return 500
-
-    route, summary = run(_door_to_door_transit(F(), g, home, dest, n_each=1))
-    if route.provider == "metro-topology":
-        assert sum(l.seconds for l in route.legs) == route.travel_seconds
-        assert "пересад" in summary  # transfer points explicit (or "без пересадок")
+def test_transport_legacy_migrates_on_read(tmp_path):
+    p = str(tmp_path / "m.sqlite3")
+    s = Store(p)
+    with s._conn() as c:
+        c.execute("INSERT INTO users(user_id, transport) VALUES (1, 'transit')")
+        c.execute("INSERT INTO users(user_id, transport) VALUES (2, 'driving')")
+        c.execute("INSERT INTO users(user_id, transport) VALUES (3, 'foot')")
+    assert s.get_user(1).transport == "metro"
+    assert s.get_user(2).transport == "walk"
+    assert s.get_user(3).transport == "walk"
+    assert s.get_user(999).transport == "metro"  # дефолт новым
 
 
 def test_store_notes_crud_and_persistence(tmp_path):

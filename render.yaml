@@ -9,6 +9,8 @@ services:
     envVars:
       - key: BOT_TOKEN
         sync: false # заполнить в Render Dashboard (секрет)
+      - key: GIS_API_KEY
+        sync: false # 2GIS Routing API: пешком + метро (секрет)
       - key: LOG_LEVEL
         value: INFO
       - key: INSTITUTION_TZ

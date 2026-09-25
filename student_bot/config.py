@@ -39,6 +39,7 @@ class Settings:
     groups_cache_ttl_h: int = 168  # 7 days
     schedule_day_ttl_s: int = 900  # in-memory TTL for day/range schedule JSON (15 min)
     database_path: str = "bot_data.sqlite3"
+    gis_api_key: str = ""  # 2GIS Routing API ($GIS_API_KEY)
     default_buffer_min: int = 10
     default_evening_time: str = "21:00"
     default_morning_minutes_before_exit: int = 60
@@ -66,6 +67,7 @@ class Settings:
             groups_cache_ttl_h=int(_get("GROUPS_CACHE_TTL_H", "168") or 168),
             schedule_day_ttl_s=int(_get("SCHEDULE_DAY_TTL_S", "900") or 900),
             database_path=_get("DATABASE_PATH", "bot_data.sqlite3"),
+            gis_api_key=_get("GIS_API_KEY"),
             default_buffer_min=int(_get("DEFAULT_BUFFER_MIN", "10") or 10),
             default_evening_time=_get("DEFAULT_EVENING_TIME", "21:00"),
             default_morning_minutes_before_exit=int(_get("DEFAULT_MORNING_MIN_BEFORE_EXIT", "60") or 60),

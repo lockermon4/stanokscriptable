@@ -1,27 +1,31 @@
 """Orchestration: schedule -> first lesson -> building address -> route -> exit plan.
 
+Маршруты — только 2GIS (пешком и метро, машины нет), см. routing.py.
+
 Honest failure modes (no invented times):
-- schedule API down -> ScheduleApiError propagates, bot shows schedule-unavailable
+- schedule API down -> schedule_failed, schedule shown unavailable
 - unknown building code -> unknown_building=True, no route
-- geocode/route down -> route_failed=True, schedule shown without road time
+- 2GIS down/empty -> route_failed=True, schedule shown without road time
+- metro not available between points -> walk fallback + metro_fallback=True
+  ("маршрута на метро нет, показываю пешком"), never a fake metro time
 """
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 from .buildings import BuildingStore
 from .config import Settings
 from .exit_time import ExitPlan, compute_exit, first_lesson_of_day, first_relevant_lesson
 from .geocode import NominatimGeocoder
-from .metro import MetroGraph
 from .models import DaySchedule
 from .normalize import normalize_day
+from .routing import NoMetroError, RouteOption, get_metro_route, get_walking_route
 from .routing_base import RouteLeg, RouteResult
-from .routing_osrm import OsrmProvider
 from .schedule_client import ScheduleClient
+from .store import norm_transport
 
 
 @dataclass
@@ -34,62 +38,67 @@ class DayView:
     unknown_building: bool = False
     schedule_failed: bool = False
     building_heuristic: bool = False  # cabinet->building by default rule, not certain
-    metro_summary: str = ""  # e.g. "метро Савёловская → Новослободская: 1 перегон, 1 пересадка"
+    metro_summary: str = ""  # first 2GIS option summary, e.g. "21 мин, 1 пересадка"
+    metro_fallback: bool = False  # metro requested but unavailable -> walked instead
 
 
-async def _walk_seconds(foot, a_lonlat: tuple[float, float], b_lonlat: tuple[float, float]) -> int:
-    """`foot` is FosFootProvider (preferred) or any router with .route()."""
-    if hasattr(foot, "foot_seconds"):
-        return await foot.foot_seconds(a_lonlat, b_lonlat)
-    r = await foot.route(a_lonlat, b_lonlat, "foot")
-    return r.travel_seconds
+@dataclass(frozen=True)
+class LessonTarget:
+    """Пара + точка назначения для построения маршрута (без самого маршрута)."""
+    lesson: object  # Lesson
+    lat: float
+    lon: float
+    label: str  # "ауд. 0303, новый корпус" — для сообщений
+    heuristic: bool = False
 
 
-async def _door_to_door_transit(
-    foot, metro: MetroGraph,
-    from_xy: tuple[float, float], to_xy: tuple[float, float], n_each: int = 3,
-) -> tuple[RouteResult, str]:
-    """Minimize full door-to-door over TOP-N entry AND exit stations:
-    total = walk(home->A) + [board + legs + transfers] + walk(B->corp).
-    Falls back to direct walk when it wins. All legs measured, nothing
-    double-counted: BOARD_WAIT lives inside ride.seconds exactly once.
-    from_xy/to_xy are (lat, lon); foot takes (lon, lat)."""
-    from datetime import datetime, timezone
+@dataclass(frozen=True)
+class LessonTargetError:
+    reason: str  # "schedule_failed" | "no_lessons" | "no_home" | "unknown_building"
 
-    now_utc = datetime.now(timezone.utc)
-    boards = metro.nearest_n(from_xy[0], from_xy[1], n_each)
-    alights = metro.nearest_n(to_xy[0], to_xy[1], n_each)
 
-    walks_in = {(s.lon, s.lat): await _walk_seconds(foot, (from_xy[1], from_xy[0]), (s.lon, s.lat))
-                for s in boards}
-    walks_out = {(s.lon, s.lat): await _walk_seconds(foot, (s.lon, s.lat), (to_xy[1], to_xy[0]))
-                 for s in alights}
-    direct = await _walk_seconds(foot, (from_xy[1], from_xy[0]), (to_xy[1], to_xy[0]))
+async def lesson_target(
+    *,
+    settings: Settings,
+    schedule_client: ScheduleClient,
+    buildings: BuildingStore,
+    group: str,
+    day: date,
+    now: datetime,
+    for_today: bool,
+) -> LessonTarget | LessonTargetError:
+    """Расписание -> ближайшая пара -> координаты корпуса. Чистый шаг перед
+    выбором типа маршрута (варианты строит уже routing.py по этим координатам)."""
+    tz = ZoneInfo(settings.institution_tz)
+    day_iso = day.strftime(settings.schedule_date_format)
+    try:
+        raw = await schedule_client.get_day_raw(group, day_iso)
+    except Exception:
+        return LessonTargetError("schedule_failed")
+    schedule, _ = normalize_day(raw, group=group, day=day, tz_name=settings.institution_tz)
+    target = first_relevant_lesson(schedule, now.astimezone(tz)) if for_today \
+        else first_lesson_of_day(schedule)
+    if target is None:
+        return LessonTargetError("no_lessons")
+    b = buildings.lookup(target.building_code) if target.building_code else None
+    heuristic = False
+    if b is None:
+        b, heuristic = buildings.resolve_cabinet(target.room)
+    if b is None or not b.address or b.lat is None or b.lon is None:
+        return LessonTargetError("unknown_building")
+    label = f"ауд. {target.room}" if target.room else b.address
+    return LessonTarget(lesson=target, lat=b.lat, lon=b.lon, label=label, heuristic=heuristic)
 
-    best: tuple[int, object, object, object] | None = None  # total, b, a, ride
-    for b in boards:
-        for a in alights:
-            ride = metro.ride(b.id, a.id)
-            total = walks_in[(b.lon, b.lat)] + ride.seconds + walks_out[(a.lon, a.lat)]
-            if best is None or total < best[0]:
-                best = (total, b, a, ride)
-    assert best is not None
-    total, b, a, ride = best
-    if ride.stops == 0 or direct <= total:
-        route = RouteResult(travel_seconds=direct, legs=(RouteLeg("foot", direct),),
-                            is_approximate=False, calculated_at=now_utc, provider="foot")
-        return route, ""
-    tr = MetroGraph.transfers_of(ride)
-    tr_txt = ("; пересадки: " + ", ".join(f"{s} {f}→{t}" for s, f, t in tr)) if tr else "; без пересадок"
-    summary = (f"метро {b.name} → {a.name}: {ride.stops} перег., "
-               f"{ride.transfers} пересад.{tr_txt}")
-    route = RouteResult(
-        travel_seconds=total,
-        legs=(RouteLeg("foot", walks_in[(b.lon, b.lat)], f"до ст. {b.name}"),
-              RouteLeg("метро", ride.seconds, summary),
-              RouteLeg("foot", walks_out[(a.lon, a.lat)], f"от ст. {a.name}")),
-        is_approximate=True, calculated_at=now_utc, provider="metro-topology")
-    return route, summary
+
+def option_to_route(opt: RouteOption) -> RouteResult:
+    """Первый вариант 2GIS -> RouteResult для compute_exit (реальные данные API)."""
+    return RouteResult(
+        travel_seconds=opt.duration_s,
+        legs=(RouteLeg("2gis-" + opt.mode, opt.duration_s, opt.summary),),
+        is_approximate=False,  # живой ответ API, не топологическая оценка
+        calculated_at=datetime.now(timezone.utc),
+        provider="2gis",
+    )
 
 
 async def build_day_view(
@@ -98,7 +107,6 @@ async def build_day_view(
     schedule_client: ScheduleClient,
     buildings: BuildingStore,
     geocoder: NominatimGeocoder,
-    router: OsrmProvider,
     group: str,
     day: date,
     now: datetime,
@@ -106,9 +114,9 @@ async def build_day_view(
     transport: str,
     buffer_min: int,
     for_today: bool,
-    metro: MetroGraph | None = None,
-    foot=None,  # FosFootProvider (preferred) or router with .route(); defaults to router
+    routing=None,  # TwoGisRouting-like (walking()/metro()); default — модуль routing.py
     home_coords: tuple[float, float] | None = None,  # (lat, lon) from location pin
+    use_cache: bool = True,
 ) -> DayView:
     tz = ZoneInfo(settings.institution_tz)
     day_iso = day.strftime(settings.schedule_date_format)
@@ -144,25 +152,31 @@ async def build_day_view(
     dest_addr = b.address if b else ""
     if not dest_addr:
         return DayView(schedule=schedule, skipped=skipped, target=target, plan=None, unknown_building=True)
-    if foot is None:
-        foot = router
+    mode = norm_transport(transport)
+    walk = routing.walking if routing is not None else get_walking_route
+    metro = routing.metro if routing is not None else get_metro_route
     try:
         from_xy = home_coords or (await geo_task if geo_task is not None else None)
         # Verified building coords (buildings.yaml) skip geocoding entirely.
         to_xy = (b.lat, b.lon) if b.lat is not None and b.lon is not None else await geocoder.geocode(dest_addr)
         if not from_xy or not to_xy:
             return DayView(schedule=schedule, skipped=skipped, target=target, plan=None, route_failed=True)
-        metro_summary = ""
-        if transport == "transit" and metro is not None:
-            # Walk -> metro -> walk (static topology estimate, no schedules).
-            route, metro_summary = await _door_to_door_transit(foot, metro, from_xy, to_xy)
+        metro_fallback = False
+        if mode == "metro":
+            try:
+                options = await metro(from_xy, to_xy, use_cache=use_cache)
+            except NoMetroError:
+                options = await walk(from_xy, to_xy, use_cache=use_cache)
+                metro_fallback = True
         else:
-            # OSRM wants (lon, lat)
-            route = await router.route(
-                (from_xy[1], from_xy[0]), (to_xy[1], to_xy[0]), transport, arrive_by=target.starts_at
-            )
+            options = await walk(from_xy, to_xy, use_cache=use_cache)
+        if not options:
+            return DayView(schedule=schedule, skipped=skipped, target=target, plan=None, route_failed=True)
+        route = option_to_route(options[0])
+        metro_summary = options[0].summary
     except Exception:
         return DayView(schedule=schedule, skipped=skipped, target=target, plan=None, route_failed=True)
     plan = compute_exit(target, route, buffer_min, now.astimezone(tz))
     return DayView(schedule=schedule, skipped=skipped, target=target, plan=plan,
-                   building_heuristic=heuristic, metro_summary=metro_summary)
+                   building_heuristic=heuristic, metro_summary=metro_summary,
+                   metro_fallback=metro_fallback)

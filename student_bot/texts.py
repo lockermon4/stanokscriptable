@@ -27,14 +27,15 @@ def minutes(n: int, lang: str) -> str:
 
 
 TRANSPORT = {
-    "transit": (RU, "общественный транспорт", "public transit"),
-    "foot": (RU, "пешком", "on foot"),
-    "driving": (RU, "на машине", "by car"),
-    "bike": (RU, "велосипед", "bicycle"),
+    "walk": (RU, "пешком", "on foot"),
+    "metro": (RU, "на метро", "by metro"),
 }
 
 
 def transport_name(code: str, lang: str) -> str:
+    from .store import norm_transport
+
+    code = norm_transport(code)
     for k, (_, ru, en) in TRANSPORT.items():
         if k == code:
             return en if lang == EN else ru
@@ -53,12 +54,13 @@ MENU_TOMORROW = ("🗓 Завтра", "🗓 Tomorrow", ("Завтра",))
 MENU_LEAVE = ("🚪 Когда выходить", "🚪 When to leave", ("Когда выходить?", "Когда выходить"))
 MENU_NOTES = ("📝 Заметки", "📝 Notes", ("Заметка на день", "Заметка"))
 MENU_SETTINGS = ("⚙️ Настройки", "⚙️ Settings", ("Настройки",))
+MENU_ROUTES = ("⭐ Маршруты", "⭐ Routes", ("Маршруты", "Мои маршруты"))
 
 
 def menu_kb(lang: str) -> list[list[str]]:
     ru = lang != EN
     return [[MENU_TODAY[0] if ru else MENU_TODAY[1], MENU_TOMORROW[0] if ru else MENU_TOMORROW[1]],
-            [MENU_LEAVE[0] if ru else MENU_LEAVE[1]],
+            [MENU_LEAVE[0] if ru else MENU_LEAVE[1], MENU_ROUTES[0] if ru else MENU_ROUTES[1]],
             [MENU_NOTES[0] if ru else MENU_NOTES[1], MENU_SETTINGS[0] if ru else MENU_SETTINGS[1]]]
 
 
@@ -66,7 +68,7 @@ def menu_match() -> dict[str, str]:
     """button text -> action id (оба языка + старые тексты)."""
     out = {}
     for aid, item in (("today", MENU_TODAY), ("tomorrow", MENU_TOMORROW), ("leave", MENU_LEAVE),
-                      ("notes", MENU_NOTES), ("settings", MENU_SETTINGS)):
+                      ("notes", MENU_NOTES), ("settings", MENU_SETTINGS), ("routes", MENU_ROUTES)):
         for t in (item[0], item[1], *item[2]):
             out[t] = aid
     return out
@@ -103,9 +105,9 @@ def main_menu_text(lang: str) -> str:
     """Главное меню после выхода из подраздела (кнопка «Назад»)."""
     if lang == EN:
         return ("🏠 Main menu — pick an action below:\n"
-                "📅 Today · 🗓 Tomorrow · 🚪 When to leave · 📝 Notes · ⚙️ Settings")
+                "📅 Today · 🗓 Tomorrow · 🚪 When to leave · ⭐ Routes · 📝 Notes · ⚙️ Settings")
     return ("🏠 Главное меню — выберите действие кнопками ниже:\n"
-            "📅 Сегодня · 🗓 Завтра · 🚪 Когда выходить · 📝 Заметки · ⚙️ Настройки")
+            "📅 Сегодня · 🗓 Завтра · 🚪 Когда выходить · ⭐ Маршруты · 📝 Заметки · ⚙️ Настройки")
 
 
 def start_need_home(lang: str, group: str) -> str:
@@ -179,8 +181,12 @@ def settings_buttons(lang: str):
 
 
 def transport_buttons(lang: str):
-    rows = [[(transport_name(c, lang), f"tr:{c}")] for c in ("transit", "foot", "driving", "bike")]
-    rows.append([("◀️ Back", "set:menu")] if lang == EN else [("◀️ Назад", "set:menu")])
+    if lang == EN:
+        rows = [[("🚶 On foot", "tr:walk")], [("🚇 By metro", "tr:metro")],
+                [("◀️ Back", "set:menu")]]
+    else:
+        rows = [[("🚶 Пешком", "tr:walk")], [("🚇 Метро", "tr:metro")],
+                [("◀️ Назад", "set:menu")]]
     return ikb(rows)
 
 
@@ -369,3 +375,140 @@ def pretty_street(raw: str, fallback: str) -> tuple[str, str | None]:
     nm, tp = _parse_street_token(raw or "")
     name = (nm or "").strip() if nm else ""
     return (name[:1].upper() + name[1:] if name else fallback, tp)
+
+
+# ---------- маршруты 2GIS: выбор типа, варианты, детали, избранное ----------
+
+def mode_buttons(lang: str):
+    """🚶 Пешком / 🚇 Метро — первый шаг построения маршрута."""
+    if lang == EN:
+        return ikb([[("🚶 On foot", "rtm:walk"), ("🚇 By metro", "rtm:metro")],
+                    [("◀️ Back", "rt:cancel")]])
+    return ikb([[("🚶 Пешком", "rtm:walk"), ("🚇 Метро", "rtm:metro")],
+                [("◀️ Назад", "rt:cancel")]])
+
+
+def ask_route_mode(lang: str, lesson_line: str) -> str:
+    if lang == EN:
+        return f"{lesson_line}\nHow are you going?"
+    return f"{lesson_line}\nКак едем?"
+
+
+def variant_label(opt, idx: int, lang: str) -> str:
+    """Короткая подпись варианта для кнопки/списка."""
+    from .exit_time import format_duration
+
+    dur = format_duration(opt.duration_s)
+    if opt.mode == "metro":
+        n = len(opt.steps)
+        tail = ""
+        if opt.walk_before_s or opt.walk_after_s:
+            tail = f", {format_duration(opt.walk_before_s + opt.walk_after_s)} пешком"
+        if lang == EN:
+            return f"{dur}, {opt.transfers} change(s){tail}"
+        ch = "пересадка" if opt.transfers == 1 else ("пересадки" if 2 <= opt.transfers <= 4 else "пересадок")
+        return f"{dur}, {opt.transfers} {ch}{tail}"
+    km = f"{opt.distance_m / 1000:.1f} км" if opt.distance_m else ""
+    return f"{dur} {km}".strip() if lang != EN else f"{dur} {km}".strip()
+
+
+def variants_text(lang: str, lesson_line: str, options) -> str:
+    lines = [lesson_line, ""]
+    for i, o in enumerate(options):
+        lines.append(f"{i + 1}. {variant_label(o, i, lang)}")
+    lines.append("")
+    lines.append("Choose an option:" if lang == EN else "Выберите вариант:")
+    return "\n".join(lines)
+
+
+def variants_buttons(options, lang: str):
+    rows = [[(f"{i + 1}. {variant_label(o, i, lang)}", f"rtv:{i}")] for i, o in enumerate(options)]
+    rows.append([("◀️ Back", "rt:cancel")] if lang == EN else [("◀️ Назад", "rt:cancel")])
+    return ikb(rows)
+
+
+def route_details(lang: str, opt, exit_line: str = "") -> str:
+    """Детали выбранного варианта: станции/ветки метро, улицы пешком."""
+    head = variant_label(opt, 0, lang)
+    lines = [f"🗺 {head}"]
+    if opt.steps:
+        lines += [f"• {s}" for s in opt.steps]
+    else:
+        lines.append("(No step-by-step breakdown.)" if lang == EN else "(Пошагового описания нет.)")
+    if exit_line:
+        lines += ["", exit_line]
+    return "\n".join(lines)
+
+
+def route_details_buttons(idx: int, lang: str):
+    if lang == EN:
+        return ikb([[("⭐ Save", f"rt:save:{idx}")], [("◀️ Back", "rt:cancel")]])
+    return ikb([[("⭐ Сохранить", f"rt:save:{idx}")], [("◀️ Назад", "rt:cancel")]])
+
+
+def route_saved(lang: str, name: str) -> str:
+    return f"⭐ Saved: {name}" if lang == EN else f"⭐ Сохранено: {name}"
+
+
+def no_metro_fallback(lang: str) -> str:
+    if lang == EN:
+        return "⚠️ No metro route here — showing on foot."
+    return "⚠️ Маршрута на метро нет, показываю пешком."
+
+
+def route_failed(lang: str) -> str:
+    if lang == EN:
+        return "⚠️ 2GIS routing failed — try again later."
+    return "⚠️ 2GIS не отвечает — попробуйте позже."
+
+
+def leave_error_text(lang: str, reason: str) -> str:
+    if reason == "no_lessons":
+        return "🌅 No more classes today." if lang == EN else "🌅 Сегодня пар больше нет."
+    if reason == "unknown_building":
+        return "⚠️ Building address unknown — exit time not calculated." if lang == EN else \
+            "⚠️ Адрес корпуса неизвестен — время выхода не посчитано."
+    return "🌅 Couldn't fetch the timetable. Try later." if lang == EN else \
+        "🌅 Не получилось получить расписание. Попробуйте позже."
+
+
+def route_session_expired(lang: str) -> str:
+    if lang == EN:
+        return "The route expired — press 🚪 When to leave again."
+    return "Маршрут устарел — нажмите 🚪 Когда выходить ещё раз."
+
+
+def fav_list_text(lang: str, favs) -> str:
+    if not favs:
+        return "⭐ No saved routes yet." if lang == EN else "⭐ Пока нет сохранённых маршрутов."
+    head = "⭐ My routes (tap to recalculate live):" if lang == EN else \
+        "⭐ Мои маршруты (нажмите — пересчитаю по свежим данным):"
+    lines = [head]
+    for f in favs:
+        mark = "🚇" if f.transport_type == "metro" else "🚶"
+        lines.append(f"{mark} {f.name}")
+    return "\n".join(lines) + "\n"
+
+
+def fav_list_buttons(favs, lang: str):
+    rows = [[(f"{'🚇' if f.transport_type == 'metro' else '🚶'} {f.name}", f"fav:{f.id}")]
+            for f in favs]
+    rows.append([("◀️ Back", "rt:cancel")] if lang == EN else [("◀️ Назад", "rt:cancel")])
+    return ikb(rows)
+
+
+def fav_item_buttons(fav_id: int, lang: str):
+    if lang == EN:
+        return ikb([[("🗑 Delete", f"favdel:{fav_id}")], [("◀️ Back", "rt:cancel")]])
+    return ikb([[("🗑 Удалить", f"favdel:{fav_id}")], [("◀️ Назад", "rt:cancel")]])
+
+
+def fav_confirm_delete(lang: str, name: str, fav_id: int):
+    q = f'Delete "{name}"?' if lang == EN else f'Удалить «{name}»?'
+    kb = ikb([[("Yes", f"favdel_yes:{fav_id}"), ("Cancel", "rt:cancel")]] if lang == EN else
+             [[("Да", f"favdel_yes:{fav_id}"), ("Отмена", "rt:cancel")]])
+    return q, kb
+
+
+def fav_deleted(lang: str, name: str) -> str:
+    return f'🗑 Deleted "{name}".' if lang == EN else f'🗑 «{name}» удалён.'

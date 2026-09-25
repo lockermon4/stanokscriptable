@@ -29,24 +29,35 @@ class FakeGeo:
         return (37.6, 55.7) if self.ok else None
 
 
-class FakeRouter:
-    supports_transit = False
-    supports_arrival_time = False
-    supports_live_traffic = False
+class FakeRouting:
+    """TwoGisRouting-like: walking()/metro() с флагами падения."""
 
-    def __init__(self, fail=False):
-        self.fail = fail
-        self.calls = 0
+    def __init__(self, fail_walk=False, fail_metro=False, no_metro=False, secs=1200):
+        self.fail_walk = fail_walk
+        self.fail_metro = fail_metro
+        self.no_metro = no_metro
+        self.secs = secs
+        self.calls: list[str] = []
 
-    async def route(self, a, b, mode, arrive_by=None):
-        from datetime import timezone
+    def _opt(self, mode):
+        from student_bot.routing import RouteOption
+        return RouteOption(mode=mode, duration_s=self.secs, distance_m=5000,
+                           summary=f"{mode} {self.secs // 60} мин")
 
-        self.calls += 1
-        if self.fail:
+    async def walking(self, fr, to, use_cache=True):
+        self.calls.append("walk")
+        if self.fail_walk:
             raise RuntimeError("down")
-        from student_bot.routing_base import RouteLeg, RouteResult
-        return RouteResult(travel_seconds=1200, legs=(RouteLeg(mode, 1200),),
-                           is_approximate=True, calculated_at=datetime.now(timezone.utc), provider="fake")
+        return [self._opt("walk")]
+
+    async def metro(self, fr, to, use_cache=True):
+        self.calls.append("metro")
+        if self.fail_metro:
+            raise RuntimeError("down")
+        if self.no_metro:
+            from student_bot.routing import NoMetroError
+            raise NoMetroError("нет метро")
+        return [self._opt("metro")]
 
 
 def run(coro):
@@ -55,7 +66,8 @@ def run(coro):
 
 def _store():
     return BuildingStore.from_mapping(
-        {"вадковский-3а": "Москва, Вадковский пер., 3А", "фрезер-10": "Москва, шоссе Фрезер, 10"},
+        {"вадковский-3а": {"address": "Москва, Вадковский пер., 3А", "lat": 55.79, "lon": 37.59},
+         "фрезер-10": {"address": "Москва, шоссе Фрезер, 10", "lat": 55.73, "lon": 37.73}},
         cabinet_rules={"фрезер": "фрезер-10"},
         cabinet_default="вадковский-3а",
     )
@@ -82,9 +94,9 @@ def test_unknown_building_no_invented_route():
     sched = FakeSched([{"subject": "М", "date": "2026-09-24", "startTime": "09:00", "endTime": "10:30",
                         "cabinet": "", "type": "Лекция", "groupName": "G"}])
     view = run(build_day_view(settings=S, schedule_client=sched, buildings=_store(),
-                              geocoder=FakeGeo(), router=FakeRouter(), group="G",
+                              geocoder=FakeGeo(), routing=FakeRouting(), group="G",
                               day=date(2026, 9, 24), now=datetime(2026, 9, 24, 7, tzinfo=TZ),
-                              home_address="дом", transport="transit", buffer_min=10, for_today=False))
+                              home_address="дом", transport="metro", buffer_min=10, for_today=False))
     assert view.unknown_building and view.plan is None
 
 
@@ -92,9 +104,9 @@ def test_route_failure_shows_schedule_without_times():
     sched = FakeSched([{"subject": "М", "date": "2026-09-24", "startTime": "09:00", "endTime": "10:30",
                         "cabinet": "0303", "type": "Лекция", "groupName": "G"}])
     view = run(build_day_view(settings=S, schedule_client=sched, buildings=_store(),
-                              geocoder=FakeGeo(), router=FakeRouter(fail=True), group="G",
+                              geocoder=FakeGeo(), routing=FakeRouting(fail_walk=True, fail_metro=True), group="G",
                               day=date(2026, 9, 24), now=datetime(2026, 9, 24, 7, tzinfo=TZ),
-                              home_address="дом", transport="transit", buffer_min=10, for_today=False))
+                              home_address="дом", transport="metro", buffer_min=10, for_today=False))
     assert view.route_failed and view.plan is None and view.schedule.count == 1
 
 
@@ -102,9 +114,9 @@ def test_frezer_cabinet_resolves_to_frezer():
     sched = FakeSched([{"subject": "М", "date": "2026-09-24", "startTime": "09:00", "endTime": "10:30",
                         "cabinet": "Фрезер 303(ММ)", "type": "Лекция", "groupName": "G"}])
     view = run(build_day_view(settings=S, schedule_client=sched, buildings=_store(),
-                              geocoder=FakeGeo(), router=FakeRouter(), group="G",
+                              geocoder=FakeGeo(), routing=FakeRouting(), group="G",
                               day=date(2026, 9, 24), now=datetime(2026, 9, 24, 7, tzinfo=TZ),
-                              home_address="дом", transport="transit", buffer_min=10, for_today=False))
+                              home_address="дом", transport="metro", buffer_min=10, for_today=False))
     assert view.plan is not None and view.building_heuristic is False
 
 
@@ -112,16 +124,55 @@ def test_plain_cabinet_uses_heuristic_default():
     sched = FakeSched([{"subject": "М", "date": "2026-09-24", "startTime": "09:00", "endTime": "10:30",
                         "cabinet": "0303", "type": "Лекция", "groupName": "G"}])
     view = run(build_day_view(settings=S, schedule_client=sched, buildings=_store(),
-                              geocoder=FakeGeo(), router=FakeRouter(), group="G",
+                              geocoder=FakeGeo(), routing=FakeRouting(), group="G",
                               day=date(2026, 9, 24), now=datetime(2026, 9, 24, 7, tzinfo=TZ),
-                              home_address="дом", transport="transit", buffer_min=10, for_today=False))
+                              home_address="дом", transport="metro", buffer_min=10, for_today=False))
     assert view.plan is not None and view.building_heuristic is True
 
 
 def test_schedule_api_failure_flag():
     sched = FakeSched(RuntimeError("down"))
     view = run(build_day_view(settings=S, schedule_client=sched, buildings=BuildingStore([]),
-                              geocoder=FakeGeo(), router=FakeRouter(), group="G",
+                              geocoder=FakeGeo(), routing=FakeRouting(), group="G",
                               day=date(2026, 9, 24), now=datetime(2026, 9, 24, 7, tzinfo=TZ),
-                              home_address="дом", transport="transit", buffer_min=10, for_today=False))
+                              home_address="дом", transport="metro", buffer_min=10, for_today=False))
     assert view.schedule_failed
+
+
+def _sched_one():
+    return FakeSched([{"subject": "М", "date": "2026-09-24", "startTime": "09:00", "endTime": "10:30",
+                       "cabinet": "0303", "type": "Лекция", "groupName": "G"}])
+
+
+def test_metro_unavailable_falls_back_to_walk():
+    r = FakeRouting(no_metro=True)
+    view = run(build_day_view(settings=S, schedule_client=_sched_one(), buildings=_store(),
+                              geocoder=FakeGeo(), routing=r, group="G",
+                              day=date(2026, 9, 24), now=datetime(2026, 9, 24, 7, tzinfo=TZ),
+                              home_address="дом", transport="metro", buffer_min=10, for_today=False))
+    assert view.plan is not None and view.metro_fallback is True
+    assert r.calls == ["metro", "walk"]  # сначала метро, потом пешком
+
+
+def test_walk_mode_uses_first_option():
+    r = FakeRouting(secs=1800)
+    view = run(build_day_view(settings=S, schedule_client=_sched_one(), buildings=_store(),
+                              geocoder=FakeGeo(), routing=r, group="G",
+                              day=date(2026, 9, 24), now=datetime(2026, 9, 24, 7, tzinfo=TZ),
+                              home_address="дом", transport="walk", buffer_min=10, for_today=False))
+    assert view.plan is not None and view.plan.travel_seconds == 1800
+    assert view.metro_fallback is False and view.plan.exit_at.strftime("%H:%M") == "08:20"
+
+
+def test_lesson_target_ok_and_errors():
+    from student_bot.service import LessonTargetError, lesson_target
+    kw = dict(settings=S, schedule_client=_sched_one(), buildings=_store(),
+              group="G", day=date(2026, 9, 24),
+              now=datetime(2026, 9, 24, 7, tzinfo=TZ), for_today=False)
+    tgt = run(lesson_target(**kw))
+    assert not isinstance(tgt, LessonTargetError)
+    assert abs(tgt.lat) > 0 and "0303" in tgt.label
+    bad = run(lesson_target(settings=S, schedule_client=FakeSched(RuntimeError("x")),
+                            buildings=_store(), group="G", day=date(2026, 9, 24),
+                            now=datetime(2026, 9, 24, 7, tzinfo=TZ), for_today=False))
+    assert isinstance(bad, LessonTargetError) and bad.reason == "schedule_failed"

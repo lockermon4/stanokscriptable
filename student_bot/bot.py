@@ -19,29 +19,30 @@ from .cards import (build_evening, build_morning, evening_failed, format_day_lis
                     format_telegram_day, format_telegram_evening, format_telegram_morning,
                     with_metro, build_focus)
 from .config import Settings
-from .exit_time import first_relevant_lesson, format_duration
+from .exit_time import compute_exit, first_relevant_lesson, format_duration
 from .geocode import NominatimGeocoder
-from .metro import MetroGraph
 from .normalize import normalize_day, normalize_groups
 from .notifications import morning_notify_time, parse_hhmm
-from .routing_foot import FosFootProvider
-from .routing_osrm import OsrmProvider
+from .routing import NoMetroError, RoutingError, TwoGisRouting
 from .schedule_client import ScheduleClient
 from .health import start_health_server, stop_health_server
 from .sendlog import SendLogMiddleware, install_send_logging, setup_logging
-from .service import build_day_view
-from .store import Store, UserSettings
+from .service import LessonTargetError, build_day_view, lesson_target
+from .store import Store, UserSettings, fmt_coords, norm_transport, parse_coords
 from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMORROW,
                      ask_address, ask_buffer, ask_custom_date, ask_evening, ask_lang,
                      ask_morning_lead, ask_new_address, ask_new_group, ask_note_date,
-                     ask_note_text, ask_notify, ask_transport, buffer_buttons, cancel_buttons,
-                     evening_buttons, lang_buttons,
-                     main_menu_text, menu_kb, menu_match, morning_lead_buttons, need_group_first, need_home, norm_lang,
+                     ask_note_text, ask_notify, ask_route_mode, ask_transport, buffer_buttons,
+                     cancel_buttons,                      evening_buttons, lang_buttons, leave_error_text,
+                     main_menu_text, menu_kb, menu_match, mode_buttons, morning_lead_buttons,
+                     need_group_first, need_home, norm_lang, no_metro_fallback,
                      note_card, note_confirm_delete, note_date_buttons, note_deleted, note_item_buttons,
                      note_saved, notes_menu_buttons, notes_menu_text, notify_menu_buttons,
-                     addr_saved_new, recalc_failed, settings_buttons, settings_view,
+                     addr_saved_new, fav_confirm_delete, fav_deleted, fav_item_buttons,
+                     fav_list_buttons, fav_list_text, recalc_failed, route_details,
+                     route_details_buttons, route_failed, route_saved, route_session_expired, settings_buttons, settings_view,
                      start_back, start_need_group, start_need_home, start_new, start_route,
-                     transport_buttons, transport_name)
+                     transport_buttons, transport_name, variants_buttons, variants_text)
 from .address_check import format_confirm, match_candidate, parse_address
 
 
@@ -139,6 +140,16 @@ def day_exit_line(view, lang: str = "ru") -> str:
     return s
 
 
+def exit_line_for(lesson, duration_s: int, buffer_min: int, lang: str = "ru") -> str:
+    """Выход/прибытие для выбранного варианта маршрута (чистая функция)."""
+    exit_at = lesson.starts_at - timedelta(seconds=duration_s, minutes=buffer_min)
+    arr = exit_at + timedelta(seconds=duration_s)
+    dur = format_duration(duration_s)
+    if lang == "en":
+        return (f"🏃 Leave at {exit_at:%H:%M} (~{dur} travel), arrival ~{arr:%H:%M}.")
+    return (f"🏃 Выйти в {exit_at:%H:%M} (~{dur} в пути), прибытие ~{arr:%H:%M}.")
+
+
 def morning_card(view, note: str):
     from .cards import MorningData
 
@@ -156,7 +167,7 @@ async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict,
                        last_calc: dict[int, float]):
     """Every 60 s. Evening: schedule+note (1 API call, no routing).
     Morning: cheap schedule-only check for first lesson; full routing calc
-    (up to ~7 foot calls) at most every 30 min per user and only within 4 h
+    (2GIS, first option) at most every 30 min per user and only within 4 h
     before the first lesson. Sent-flags persist in DB (no dupes on restart).
 
     last_calc is passed explicitly (NOT inside deps): deps is splatted into
@@ -232,17 +243,13 @@ async def main() -> None:
     store = Store(settings.database_path)
     sched_client = ScheduleClient(settings)
     geocoder = NominatimGeocoder(settings)
-    router = OsrmProvider(settings)
-    foot = FosFootProvider(settings)
-    try:
-        metro = MetroGraph.load(settings.metro_data_file)
-    except (FileNotFoundError, ValueError):
-        metro = None
+    routing = TwoGisRouting()  # ключ из $GIS_API_KEY; только пешком и метро
     deps = {"schedule_client": sched_client, "buildings": buildings, "geocoder": geocoder,
-            "router": router, "foot": foot, "metro": metro}
+            "routing": routing}
     last_calc: dict[int, float] = {}  # scheduler throttle, kept OUT of deps (see above)
     addr_picks: dict[int, list[tuple[str, float, float]]] = {}  # uid -> [(label, lat, lon)]
     note_tmp: dict[int, dict] = {}  # uid -> {"op": add/view/del, "date": iso}
+    route_sessions: dict[int, dict] = {}  # uid -> {from,to,label,lesson,buffer,mode,options}
 
     def routing_changed(uid: int) -> None:
         """Address/group/transport/buffer changed: drop everything computed
@@ -250,8 +257,9 @@ async def main() -> None:
         iteration recomputes from the NEW home (the send-window check still
         guards against late/duplicate sends)."""
         last_calc.pop(uid, None)
+        route_sessions.pop(uid, None)
         try:
-            foot.drop()
+            routing.drop()
         except Exception:
             pass
         try:
@@ -262,6 +270,16 @@ async def main() -> None:
 
     async def verify_address(text: str, lang: str = "ru") -> tuple[str, list[tuple[str, float, float]], str]:
         return await verify_address_text(geocoder, text, lang)
+
+    async def home_xy(u) -> tuple[float, float] | None:
+        """Точка отправления: пин или геокод адреса. None — посчитать нельзя."""
+        hc = home_coords_of(u)
+        if hc is not None:
+            return hc
+        try:
+            return await geocoder.geocode(u.home_address) if u.home_address.strip() else None
+        except Exception:
+            return None
 
     async def recalc_block(u) -> str:
         """Fresh exit/travel/arrival for today from CURRENT stored settings.
@@ -375,16 +393,37 @@ async def main() -> None:
             now = datetime.now(tz)
             day = now.date() if action != "tomorrow" else now.date() + timedelta(days=1)
             for_today = action in ("today", "leave")
-            view = await build_day_view(group=u.group, day=day, now=now, home_address=u.home_address,
-                                        home_coords=home_coords_of(u),
-                                        transport=u.transport, buffer_min=u.buffer_min,
-                                        for_today=for_today, **deps, settings=settings)
+            view = None
+            if action != "leave":
+                # leave идёт своим флоу (lesson_target + выбор типа) — лишний
+                # предрасчёт 2GIS здесь не нужен.
+                view = await build_day_view(group=u.group, day=day, now=now, home_address=u.home_address,
+                                            home_coords=home_coords_of(u),
+                                            transport=u.transport, buffer_min=u.buffer_min,
+                                            for_today=for_today, **deps, settings=settings)
             note = store.get_note(m.from_user.id, day.isoformat())
             if action == "leave":
-                card = morning_card(view, note)
-                if getattr(view, "metro_summary", "") and card.route_ok:
-                    card = with_metro(card, view.metro_summary)
-                await m.answer(format_telegram_morning(card, lang), reply_markup=kb)
+                # Шаг 1: пара + точка назначения; тип маршрута выбирает пользователь.
+                tgt = await lesson_target(settings=settings,
+                                          schedule_client=deps["schedule_client"],
+                                          buildings=deps["buildings"],
+                                          group=u.group, day=day, now=now, for_today=True)
+                if isinstance(tgt, LessonTargetError):
+                    await m.answer(leave_error_text(lang, tgt.reason), reply_markup=kb)
+                else:
+                    from_xy = await home_xy(u)
+                    if from_xy is None:
+                        await m.answer(route_failed(lang), reply_markup=kb)
+                    else:
+                        lesson_line = (f"{tgt.lesson.starts_at.strftime('%H:%M')} — "
+                                       f"{tgt.lesson.subject}, {tgt.label}")
+                        route_sessions[m.from_user.id] = {
+                            "from": from_xy, "to": (tgt.lat, tgt.lon), "label": tgt.label,
+                            "lesson_line": lesson_line, "lesson": tgt.lesson,
+                            "buffer": u.buffer_min, "mode": norm_transport(u.transport),
+                            "options": [], "fallback": False}
+                        await m.answer(ask_route_mode(lang, lesson_line),
+                                       reply_markup=mode_buttons(lang))
             else:
                 if action == "today":
                     # Intraday: фокус (ближайшая пара, на которую можно попасть)
@@ -429,6 +468,10 @@ async def main() -> None:
             return
         if action == "notes":
             await m.answer(notes_menu_text(lang), reply_markup=notes_menu_buttons(lang))
+            return
+        if action == "routes":
+            favs = store.list_favorites(m.from_user.id)
+            await m.answer(fav_list_text(lang, favs), reply_markup=fav_list_buttons(favs, lang))
             return
         # settings
         await m.answer(settings_card(u), reply_markup=settings_buttons(lang))
@@ -582,11 +625,12 @@ async def main() -> None:
             return
         if low.startswith(("транспорт ", "transport ")):
             v = text.split(None, 1)[1].strip() if len(text.split(None, 1)) > 1 else ""
-            if v not in ("transit", "foot", "walking", "driving", "car", "bike",
-                         "общественный", "пешком", "машина", "вело"):
-                await m.answer("transit | foot | driving | bike", reply_markup=kb)
+            mode = norm_transport(v)
+            if v.lower() not in ("walk", "metro", "пешком", "метро", "transit", "foot",
+                                 "общественный"):
+                await m.answer("walk | metro", reply_markup=kb)
                 return
-            u.transport = {"walking": "foot", "car": "driving"}.get(v, v)
+            u.transport = mode
             store.save_user(u)
             await m.answer(settings_card(u), reply_markup=kb)
             return
@@ -755,8 +799,8 @@ async def main() -> None:
             await safe_edit(ask_transport(fresh().lang), transport_buttons(fresh().lang))
             return
         if data.startswith("tr:"):
-            mode = data[3:]
-            if mode not in ("transit", "foot", "driving", "bike"):
+            mode = norm_transport(data[3:])
+            if mode not in ("walk", "metro"):
                 return
             u = fresh()
             u.transport = mode
@@ -891,6 +935,127 @@ async def main() -> None:
                             notes_menu_buttons(u.lang))
             return
 
+        # --- маршруты 2GIS: тип -> варианты -> детали + сохранить; избранное ---
+        async def show_options(sess: dict, use_cache: bool) -> None:
+            """Запросить варианты по sess[from/to/mode], показать кнопками."""
+            u = fresh()
+            mode = sess.get("mode", "walk")
+            try:
+                if mode == "metro":
+                    try:
+                        options = await routing.metro(sess["from"], sess["to"],
+                                                      use_cache=use_cache)
+                    except NoMetroError:
+                        options = await routing.walking(sess["from"], sess["to"],
+                                                        use_cache=use_cache)
+                        sess["fallback"] = True
+                    else:
+                        sess["fallback"] = False
+                else:
+                    options = await routing.walking(sess["from"], sess["to"],
+                                                    use_cache=use_cache)
+                    sess["fallback"] = False
+            except RoutingError:
+                await safe_edit(route_failed(u.lang))
+                return
+            if not options:
+                await safe_edit(route_failed(u.lang))
+                return
+            sess["options"] = options
+            txt = variants_text(u.lang, sess["lesson_line"], options)
+            if sess.get("fallback"):
+                txt = no_metro_fallback(u.lang) + "\n\n" + txt
+            await safe_edit(txt, variants_buttons(options, u.lang))
+
+        if data in ("rtm:walk", "rtm:metro"):
+            sess = route_sessions.get(uid)
+            if not sess:
+                await safe_edit(route_session_expired(fresh().lang))
+                return
+            sess["mode"] = data[4:]
+            await show_options(sess, use_cache=True)
+            return
+        if data.startswith("rtv:"):
+            sess = route_sessions.get(uid)
+            try:
+                i = int(data[4:])
+            except ValueError:
+                return
+            if not sess or i >= len(sess.get("options", [])):
+                await safe_edit(route_session_expired(fresh().lang))
+                return
+            opt = sess["options"][i]
+            u = fresh()
+            exit_line = ""
+            if sess.get("lesson") is not None:
+                exit_line = exit_line_for(sess["lesson"], opt.duration_s,
+                                          sess.get("buffer", 10), u.lang)
+            await safe_edit(route_details(u.lang, opt, exit_line),
+                            route_details_buttons(i, u.lang))
+            return
+        if data.startswith("rt:save:"):
+            sess = route_sessions.get(uid)
+            try:
+                i = int(data[len("rt:save:"):])
+            except ValueError:
+                return
+            if not sess or i >= len(sess.get("options", [])):
+                await safe_edit(route_session_expired(fresh().lang))
+                return
+            u = fresh()
+            name = f"Дом → {sess['label']}"
+            store.add_favorite(uid, name, fmt_coords(*sess["from"]),
+                               fmt_coords(*sess["to"]), sess.get("mode", "walk"))
+            await safe_edit(route_saved(u.lang, name))
+            return
+        if data == "rt:cancel":
+            route_sessions.pop(uid, None)
+            await show_main_menu(cb, fresh().lang)
+            return
+        if data.startswith("fav:"):
+            try:
+                fid = int(data[4:])
+            except ValueError:
+                return
+            fav = next((f for f in store.list_favorites(uid) if f.id == fid), None)
+            if fav is None:
+                await safe_edit(route_session_expired(fresh().lang))
+                return
+            fr, to = parse_coords(fav.from_coords), parse_coords(fav.to_coords)
+            if fr is None or to is None:
+                await safe_edit(route_failed(fresh().lang))
+                return
+            route_sessions[uid] = {"from": fr, "to": to, "label": fav.name,
+                                   "lesson_line": fav.name, "lesson": None,
+                                   "buffer": 10, "mode": fav.transport_type,
+                                   "options": [], "fallback": False}
+            await show_options(route_sessions[uid], use_cache=False)  # свежее время, не из кэша
+            return
+        if data.startswith("favdel:"):
+            try:
+                fid = int(data[len("favdel:"):])
+            except ValueError:
+                return
+            fav = next((f for f in store.list_favorites(uid) if f.id == fid), None)
+            if fav is None:
+                return
+            u = fresh()
+            q, kb2 = fav_confirm_delete(u.lang, fav.name, fid)
+            await safe_edit(q, kb2)
+            return
+        if data.startswith("favdel_yes:"):
+            try:
+                fid = int(data[len("favdel_yes:"):])
+            except ValueError:
+                return
+            fav = next((f for f in store.list_favorites(uid) if f.id == fid), None)
+            name = fav.name if fav else ""
+            store.delete_favorite(uid, fid)
+            u = fresh()
+            await safe_edit(fav_deleted(u.lang, name),
+                            fav_list_buttons(store.list_favorites(uid), u.lang))
+            return
+
     # Health-порт для Render Free: работает параллельно с polling.
     # aiogram start_polling сам ловит SIGINT/SIGTERM -> выходим в finally и всё закрываем.
     health_runner = await start_health_server()
@@ -900,7 +1065,7 @@ async def main() -> None:
     finally:
         sched_task.cancel()
         await stop_health_server(health_runner)
-        for c in (sched_client, geocoder, router, foot):
+        for c in (sched_client, geocoder, routing):
             try:
                 if hasattr(c, "close"):
                     await c.close()
