@@ -28,11 +28,18 @@ log = logging.getLogger("bot.send")
 
 
 def setup_logging(level: str = "INFO") -> None:
+    import sys
+
+    # Render читает логи из stdout/stderr — явно stdout, не файл.
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
+        stream=sys.stdout,
         format="%(asctime)s %(levelname)-5s %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    # Шум транспортных библиотек в INFO не нужен (каждый HTTP-запрос строкой).
+    for noisy in ("httpx", "httpcore", "aiohttp.access"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 @dataclass

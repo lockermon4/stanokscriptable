@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import os
 import re
 import time
 from datetime import date, datetime, timedelta
@@ -26,6 +27,7 @@ from .notifications import morning_notify_time, parse_hhmm
 from .routing_foot import FosFootProvider
 from .routing_osrm import OsrmProvider
 from .schedule_client import ScheduleClient
+from .health import start_health_server, stop_health_server
 from .sendlog import SendLogMiddleware, install_send_logging, setup_logging
 from .service import build_day_view
 from .store import Store, UserSettings
@@ -315,7 +317,7 @@ async def main() -> None:
 
     bot = Bot(settings.bot_token)
     dp = Dispatcher()
-    setup_logging()
+    setup_logging(os.environ.get("LOG_LEVEL", "INFO"))
     try:  # revision marker: tracebacks show file paths, this line shows WHICH copy runs
         import subprocess as _sp
 
@@ -889,8 +891,27 @@ async def main() -> None:
                             notes_menu_buttons(u.lang))
             return
 
-    asyncio.create_task(scheduler_loop(bot, settings, store, deps, last_calc))
-    await dp.start_polling(bot)
+    # Health-порт для Render Free: работает параллельно с polling.
+    # aiogram start_polling сам ловит SIGINT/SIGTERM -> выходим в finally и всё закрываем.
+    health_runner = await start_health_server()
+    sched_task = asyncio.create_task(scheduler_loop(bot, settings, store, deps, last_calc))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        sched_task.cancel()
+        await stop_health_server(health_runner)
+        for c in (sched_client, geocoder, router, foot):
+            try:
+                if hasattr(c, "close"):
+                    await c.close()
+                else:
+                    await c._http.aclose()
+            except Exception:
+                pass
+        try:
+            await bot.session.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
