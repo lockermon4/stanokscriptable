@@ -207,20 +207,25 @@ def pretty_street(raw: str, fallback: str) -> tuple[str, str | None]:
     return (name[:1].upper() + name[1:] if name else fallback, tp)
 
 
-async def verify_address_text(geocoder, text: str) -> tuple[str, list[tuple[str, float, float]], str]:
+async def verify_address_text(geocoder, text: str, lang: str = "ru") -> tuple[str, list[tuple[str, float, float]], str]:
     """Parse + geocode + field match. Returns (status, suitable, message).
     status: ok-one | ok-many | not-found | bad-city | unparsed.
     suitable: [(confirm_label, lat, lon)]. Bot is Moscow-only: the query is
     prefixed with Москва unless the user named another city (then refused)."""
+    en = lang == "en"
     p = parse_address(text)
     if p.city is not None and _norm(p.city) != "москва":
         return ("bad-city", [],
-                f"Принимаю адреса только по Москве, а у вас — {p.city}. "
-                f"Уточните московский адрес или пришлите геоточку.")
+                (f"I only accept Moscow addresses, but yours is {p.city}. "
+                 f"Clarify a Moscow address or send a location pin.") if en else
+                (f"Принимаю адреса только по Москве, а у вас — {p.city}. "
+                 f"Уточните московский адрес или пришлите геоточку."))
     if not p.street or not p.house:
         return ("unparsed", [],
-                "Не разобрал улицу или номер дома. Пример: «ул. Островитянова, 33А». "
-                "Либо пришлите геоточку (скрепка → Геопозиция).")
+                ("Couldn't parse the street or house number. Example: “ul. Ostrovityanova, 33А”. "
+                 "Or send a location pin (📎 → Location).") if en else
+                ("Не разобрал улицу или номер дома. Пример: «ул. Островитянова, 33А». "
+                 "Либо пришлите геоточку (скрепка → Геопозиция)."))
     query = text if p.city else f"Москва, {text}"
     cands = await geocoder.candidates(query, limit=5)
     suitable: list[tuple[str, float, float]] = []
@@ -229,7 +234,7 @@ async def verify_address_text(geocoder, text: str) -> tuple[str, list[tuple[str,
         ok, _ = match_candidate(p, c)
         if ok:
             nm, tp = pretty_street(c.street, p.street)
-            label = format_confirm("Москва", nm, tp or p.street_type,
+            label = format_confirm("Москва" if not en else "Moscow", nm, tp or p.street_type,
                                    (p.house or "").upper(), p.block, p.block_kind)
             suitable.append((label, c.lat, c.lon))
         elif c.street and not c.is_house:
@@ -240,6 +245,10 @@ async def verify_address_text(geocoder, text: str) -> tuple[str, list[tuple[str,
         return ("ok-one", uniq, "")
     if uniq:
         return ("ok-many", uniq[:4], "")
-    hint = " Улица на карте есть, но такого дома не нашёл — проверьте номер." if street_only else ""
+    hint = (" The street is on the map, but I can't find that house — check the number."
+            if street_only else "") if en else \
+        (" Улица на карте есть, но такого дома не нашёл — проверьте номер."
+         if street_only else "")
     return ("not-found", [],
-            f"Точный дом не найден.{hint} Исправьте адрес или пришлите геоточку.")
+            (f"No exact house found.{hint} Fix the address or send a location pin.") if en else
+            (f"Точный дом не найден.{hint} Исправьте адрес или пришлите геоточку."))

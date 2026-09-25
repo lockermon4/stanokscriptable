@@ -57,7 +57,7 @@ class FosFootProvider:
         if wait > 0:
             await asyncio.sleep(wait)
         (flon, flat), (tlon, tlat) = a_lonlat, b_lonlat
-        url = f"{self.s.foot_base}/routed-foot/route/v1/driving/{flon},{flat};{tlon},{tlat}"
+        url = f"{self.s.foot_base}/routed-foot/route/v1/foot/{flon},{flat};{tlon},{tlat}"
         try:
             r = await self._http.get(url, params={"overview": "false"})
             r.raise_for_status()
@@ -70,6 +70,11 @@ class FosFootProvider:
         secs = int(float(data["routes"][0]["duration"]))
         self._cache[key] = (time.monotonic(), secs)
         return secs
+
+    def drop(self) -> None:
+        """Clear cached legs (called when a user changes home: old legs must
+        never leak into a new calculation)."""
+        self._cache.clear()
 
     async def route(self, from_lonlat: tuple[float, float], to_lonlat: tuple[float, float],
                     mode: str = "foot", arrive_by=None) -> RouteResult:

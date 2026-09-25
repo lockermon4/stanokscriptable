@@ -16,6 +16,7 @@ class UserSettings:
     buffer_min: int = 10
     evening_time: str = "21:00"  # HH:MM institution tz
     morning_min_before_exit: int = 60
+    lang: str = "ru"
 
 
 class Store:
@@ -37,7 +38,7 @@ class Store:
                 buffer_min INTEGER DEFAULT 10, evening_time TEXT DEFAULT '21:00',
                 morning_min_before_exit INTEGER DEFAULT 60)"""
             )
-            for col in ("home_lat REAL", "home_lon REAL"):
+            for col in ("home_lat REAL", "home_lon REAL", "lang TEXT DEFAULT 'ru'"):
                 try:
                     c.execute(f"ALTER TABLE users ADD COLUMN {col}")
                 except Exception:
@@ -65,6 +66,7 @@ class Store:
             buffer_min=int(r["buffer_min"] or 10),
             evening_time=r["evening_time"] or "21:00",
             morning_min_before_exit=int(r["morning_min_before_exit"] or 60),
+            lang=(r["lang"] if "lang" in keys and r["lang"] else "ru"),
         )
 
     def get_user(self, user_id: int) -> UserSettings:
@@ -77,14 +79,15 @@ class Store:
     def save_user(self, u: UserSettings) -> None:
         with self._conn() as c:
             c.execute(
-                """INSERT INTO users(user_id,sgroup,home_address,home_lat,home_lon,transport,buffer_min,evening_time,morning_min_before_exit)
-                VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET
+                """INSERT INTO users(user_id,sgroup,home_address,home_lat,home_lon,transport,buffer_min,evening_time,morning_min_before_exit,lang)
+                VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET
                 sgroup=excluded.sgroup, home_address=excluded.home_address,
                 home_lat=excluded.home_lat, home_lon=excluded.home_lon,
                 transport=excluded.transport, buffer_min=excluded.buffer_min,
                 evening_time=excluded.evening_time,
-                morning_min_before_exit=excluded.morning_min_before_exit""",
-                (u.user_id, u.group, u.home_address, u.home_lat, u.home_lon, u.transport, u.buffer_min, u.evening_time, u.morning_min_before_exit),
+                morning_min_before_exit=excluded.morning_min_before_exit,
+                lang=excluded.lang""",
+                (u.user_id, u.group, u.home_address, u.home_lat, u.home_lon, u.transport, u.buffer_min, u.evening_time, u.morning_min_before_exit, u.lang),
             )
 
     def all_users(self) -> list[UserSettings]:
@@ -101,6 +104,11 @@ class Store:
     def mark_sent(self, user_id: int, day: str, kind: str) -> None:
         with self._conn() as c:
             c.execute("INSERT OR IGNORE INTO sent(user_id,day,kind) VALUES(?,?,?)",
+                      (user_id, day, kind))
+
+    def clear_sent(self, user_id: int, day: str, kind: str) -> None:
+        with self._conn() as c:
+            c.execute("DELETE FROM sent WHERE user_id=? AND day=? AND kind=?",
                       (user_id, day, kind))
 
     # notes: day = YYYY-MM-DD
