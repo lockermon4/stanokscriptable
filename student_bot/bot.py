@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import re
 import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import (CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton,
+from aiogram.types import (CallbackQuery, KeyboardButton,
                            Message, ReplyKeyboardMarkup)
 
 from .address_check import verify_address_text
 from .buildings import BuildingStore, load_buildings_yaml
-from .cards import (build_evening, build_morning, evening_failed, format_telegram_day,
-                    format_telegram_evening, format_telegram_morning, with_metro, build_focus)
+from .cards import (build_evening, build_morning, evening_failed, format_day_list,
+                    format_telegram_day, format_telegram_evening, format_telegram_morning,
+                    with_metro, build_focus)
 from .config import Settings
 from .exit_time import first_relevant_lesson, format_duration
 from .geocode import NominatimGeocoder
@@ -26,15 +28,17 @@ from .routing_osrm import OsrmProvider
 from .schedule_client import ScheduleClient
 from .service import build_day_view
 from .store import Store, UserSettings
-from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMORROW, ask_address,
-                    menu_kb, menu_match, need_group_first, need_home, norm_lang, settings_view,
-                    start_back, start_need_group, start_need_home, start_new, start_route,
-                    notes_menu_text, notes_menu_buttons, note_date_buttons,
-                    settings_buttons, transport_buttons, note_date_buttons, pretty_street,
-                    menu_kb, menu_match, need_group_first, need_home, norm_lang, settings_view,
-                    start_back, start_need_group, start_need_home, start_new, start_route,
-                    notes_menu_text, notes_menu_buttons, note_date_buttons,
-                    settings_buttons, transport_buttons, note_date_buttons, pretty_street)
+from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMORROW,
+                     ask_address, ask_buffer, ask_custom_date, ask_evening, ask_lang,
+                     ask_morning_lead, ask_new_address, ask_new_group, ask_note_date,
+                     ask_note_text, ask_notify, ask_transport, buffer_buttons, cancel_buttons,
+                     evening_buttons, lang_buttons,
+                     menu_kb, menu_match, morning_lead_buttons, need_group_first, need_home, norm_lang,
+                     note_card, note_confirm_delete, note_date_buttons, note_deleted, note_item_buttons,
+                     note_saved, notes_menu_buttons, notes_menu_text, notify_menu_buttons,
+                     addr_saved_new, recalc_failed, settings_buttons, settings_view,
+                     start_back, start_need_group, start_need_home, start_new, start_route,
+                     transport_buttons, transport_name)
 from .address_check import format_confirm, match_candidate, parse_address
 
 
@@ -44,56 +48,6 @@ def kb_for(lang: str) -> ReplyKeyboardMarkup:
         keyboard=[[KeyboardButton(text=t) for t in row] for row in rows],
         resize_keyboard=True,
     )
-
-
-def ikb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=d) for t, d in row]
-                         for row in rows])
-
-
-def settings_buttons(lang: str) -> InlineKeyboardMarkup:
-    if lang == "en":
-        return ikb([[("Change group", "set:group"), ("Change address", "set:address")],
-                    [("Transport", "set:transport"), ("Buffer", "set:buffer")],
-                    [("Notifications", "set:notify"), ("Language", "set:lang")],
-                    [("◀️ Back", "set:back")]])
-    return ikb([[("Изменить группу", "set:group"), ("Изменить адрес", "set:address")],
-                [("Способ передвижения", "set:transport"), ("Запас времени", "set:buffer")],
-                [("Время уведомлений", "set:notify"), ("Язык", "set:lang")],
-                [("◀️ Назад", "set:back")]])
-
-
-def transport_buttons(lang: str) -> InlineKeyboardMarkup:
-    from .texts import transport_name
-
-    rows = [[(transport_name(c, lang), f"tr:{c}")] for c in ("transit", "foot", "driving", "bike")]
-    rows.append([("◀️ Back", "set:menu")] if lang == "en" else [("◀️ Назад", "set:menu")])
-    return ikb(rows)
-
-
-def notes_menu_buttons(lang: str) -> InlineKeyboardMarkup:
-    if lang == "en":
-        return ikb([[("➕ Add note", "note:add")],
-                    [("👁 View", "note:view"), ("🗑 Delete", "note:del")],
-                    [("◀️ Back", "note:back")]])
-    return ikb([[("➕ Добавить заметку", "note:add")],
-                [("👁 Посмотреть", "note:view"), ("🗑 Удалить", "note:del")],
-                [("◀️ Назад", "note:back")]])
-
-
-def note_date_buttons(lang: str, prefix: str) -> InlineKeyboardMarkup:
-    if lang == "en":
-        return ikb([[("Today", f"{prefix}:today"), ("Tomorrow", f"{prefix}:tomorrow")],
-                    [("Pick a date", f"{prefix}:custom")],
-                    [("Cancel", "note:menu")]])
-    return ikb([[("Сегодня", f"{prefix}:today"), ("Завтра", f"{prefix}:tomorrow")],
-                [("Выбрать дату", f"{prefix}:custom")],
-                [("Отмена", "note:menu")]])
-
-
-def notes_menu_text(lang: str) -> str:
-    return "📝 Notes: add, view or delete." if lang == "en" else "📝 Заметки: добавить, посмотреть, удалить."
 
 
 MENU = menu_match()
@@ -113,6 +67,29 @@ def settings_card(u: UserSettings) -> str:
     home = u.home_address or ""
     return settings_view(u.group, home, u.transport, u.buffer_min,
                          u.evening_time, u.morning_min_before_exit, u.lang)
+
+
+def parse_note_date(text: str) -> str | None:
+    """'2026-09-26' | '26.09.2026' | '26.09' -> ISO date or None (pure)."""
+    t = (text or "").strip()
+    try:
+        return date.fromisoformat(t).isoformat()
+    except Exception:
+        pass
+    mt = re.match(r"^(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?$", t)
+    if mt:
+        try:
+            return date(int(mt.group(3) or date.today().year),
+                        int(mt.group(2)), int(mt.group(1))).isoformat()
+        except ValueError:
+            return None
+    return None
+
+
+def note_label(iso: str) -> str:
+    """'2026-09-26' -> '26.09' (pure)."""
+    y, mo, d = iso.split("-")
+    return f"{d}.{mo}"
 
 
 def home_coords_of(u: UserSettings) -> tuple[float, float] | None:
@@ -152,13 +129,16 @@ def morning_card(view, note: str):
     return d
 
 
-async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict):
+async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict,
+                       last_calc: dict[int, float]):
     """Every 60 s. Evening: schedule+note (1 API call, no routing).
     Morning: cheap schedule-only check for first lesson; full routing calc
     (up to ~7 foot calls) at most every 30 min per user and only within 4 h
-    before the first lesson. Sent-flags persist in DB (no dupes on restart)."""
+    before the first lesson. Sent-flags persist in DB (no dupes on restart).
+
+    last_calc is passed explicitly (NOT inside deps): deps is splatted into
+    build_day_view(), which rejects unknown kwargs (see TypeError crash)."""
     tz = ZoneInfo(settings.institution_tz)
-    last_calc: dict[int, float] = deps.setdefault("last_calc", {})
     sched_client: ScheduleClient = deps["schedule_client"]
     while True:
         try:
@@ -237,6 +217,7 @@ async def main() -> None:
         metro = None
     deps = {"schedule_client": sched_client, "buildings": buildings, "geocoder": geocoder,
             "router": router, "foot": foot, "metro": metro}
+    last_calc: dict[int, float] = {}  # scheduler throttle, kept OUT of deps (see above)
     addr_picks: dict[int, list[tuple[str, float, float]]] = {}  # uid -> [(label, lat, lon)]
     note_tmp: dict[int, dict] = {}  # uid -> {"op": add/view/del, "date": iso}
 
@@ -245,7 +226,7 @@ async def main() -> None:
         for the old home. Today's morning flag is cleared so the next loop
         iteration recomputes from the NEW home (the send-window check still
         guards against late/duplicate sends)."""
-        deps.setdefault("last_calc", {}).pop(uid, None)
+        last_calc.pop(uid, None)
         try:
             foot.drop()
         except Exception:
@@ -258,6 +239,34 @@ async def main() -> None:
 
     async def verify_address(text: str, lang: str = "ru") -> tuple[str, list[tuple[str, float, float]], str]:
         return await verify_address_text(geocoder, text, lang)
+
+    async def recalc_block(u) -> str:
+        """Fresh exit/travel/arrival for today from CURRENT stored settings.
+        Called after group/address/transport/buffer changes. Never returns
+        stale numbers: empty string only when recalc is impossible (no group
+        or no home yet); otherwise a fresh calc or an honest failure line."""
+        lang = u.lang
+        if not u.group or (not u.home_address and home_coords_of(u) is None):
+            return ""
+        tz = ZoneInfo(settings.institution_tz)
+        now = datetime.now(tz)
+        try:
+            view = await build_day_view(
+                group=u.group, day=now.date(), now=now, home_address=u.home_address,
+                home_coords=home_coords_of(u), transport=u.transport,
+                buffer_min=u.buffer_min, for_today=True, **deps, settings=settings)
+        except Exception:
+            return recalc_failed(lang)
+        if view.plan is None or view.target is None:
+            return recalc_failed(lang)
+        p = view.plan
+        arr = (p.exit_at + timedelta(seconds=p.travel_seconds)).strftime("%H:%M")
+        dur = format_duration(p.travel_seconds)
+        if lang == "en":
+            return (f"🔄 Recalculated from the current home: leave at {p.exit_at:%H:%M}, "
+                    f"~{dur} travel, arrival ~{arr}.")
+        return (f"🔄 Пересчитано от текущего дома: выйти в {p.exit_at:%H:%M}, "
+                f"~{dur} в пути, прибытие ~{arr}.")
 
     async def ask_confirm(m: Message, label: str, lat: float, lon: float, lang: str = "ru") -> None:
         addr_picks[m.from_user.id] = [(label, lat, lon)]
@@ -335,22 +344,41 @@ async def main() -> None:
                                         for_today=for_today, **deps, settings=settings)
             note = store.get_note(m.from_user.id, day.isoformat())
             if action == "leave":
-                await m.answer(format_telegram_morning(morning_card(view, note), lang), reply_markup=kb)
+                card = morning_card(view, note)
+                if getattr(view, "metro_summary", "") and card.route_ok:
+                    card = with_metro(card, view.metro_summary)
+                await m.answer(format_telegram_morning(card, lang), reply_markup=kb)
             else:
                 if action == "today":
-                    # Intraday focus for "Today" button
-                    tz = ZoneInfo(settings.institution_tz)
-                    now = datetime.now(tz)
-                    lesson = view.target
-                    next_lesson = None
-                    if lesson and view.schedule.active_lessons:
-                        idx = view.schedule.active_lessons.index(lesson)
-                        if idx + 1 < len(view.schedule.active_lessons):
-                            next_lesson = view.schedule.active_lessons[idx + 1]
-                    travel_s = view.plan.travel_seconds if view.plan else None
-                    route_ok = view.plan is not None
-                    focus_text = build_focus(lesson, next_lesson, travel_s, u.buffer_min, now, route_ok, lang)
-                    await m.answer(focus_text, reply_markup=kb)
+                    # Intraday: фокус (ближайшая пара, на которую можно попасть)
+                    # + весь день простынёй, чтобы остальное расписание было видно.
+                    if view.schedule_failed:
+                        await m.answer(format_telegram_day(
+                            (f"Today, {day.strftime('%d.%m')}" if lang == "en" else
+                             f"Сегодня, {day.strftime('%d.%m')}"),
+                            evening_failed(day.isoformat()), "", lang), reply_markup=kb)
+                    elif view.target is None:
+                        day_list = format_day_list(view.schedule, now, lang)
+                        done = "🌅 No more classes today." if lang == "en" else \
+                            "🌅 Все пары на сегодня закончились."
+                        tail = f"\n🎒 {note}" if note else ""
+                        await m.answer(f"{done}\n\n{day_list}{tail}", reply_markup=kb)
+                    else:
+                        lesson = view.target
+                        next_lesson = None
+                        try:
+                            idx = list(view.schedule.active_lessons).index(lesson)
+                            rest = list(view.schedule.active_lessons)[idx + 1:]
+                            next_lesson = rest[0] if rest else None
+                        except ValueError:
+                            next_lesson = None
+                        travel_s = view.plan.travel_seconds if view.plan else None
+                        route_ok = view.plan is not None
+                        focus_text = build_focus(lesson, next_lesson, travel_s,
+                                                 u.buffer_min, now, route_ok, lang)
+                        day_list = format_day_list(view.schedule, now, lang)
+                        tail = f"\n🎒 {note}" if note else ""
+                        await m.answer(f"{focus_text}\n\n{day_list}{tail}", reply_markup=kb)
                 else:
                     label = ("Today" if action == "today" else "Tomorrow") if lang == "en" else \
                         ("Сегодня" if action == "today" else "Завтра")
@@ -438,8 +466,16 @@ async def main() -> None:
                 g = exact
             u.group = g
             store.save_user(u)
-            pending[uid] = "address"
-            await m.answer(ask_address(lang, g), reply_markup=kb)
+            pending.pop(uid, None)
+            if u.home_address or home_coords_of(u) is not None:
+                # group changed with a home present: old routing is stale
+                routing_changed(uid)
+                recalc = await recalc_block(u)
+                card = settings_card(u)
+                await m.answer(card + (f"\n\n{recalc}" if recalc else ""), reply_markup=kb)
+            else:
+                pending[uid] = "address"
+                await m.answer(ask_address(lang, g), reply_markup=kb)
             return
         if state == "address_confirm":
             if low in ("да", "ага", "точно", "верно", "подтверждаю", "yes", "y", "yeah", "ok"):
@@ -450,9 +486,11 @@ async def main() -> None:
                     u.home_lat, u.home_lon = lat, lon
                     store.save_user(u)
                     pending.pop(uid, None)
-                    routing_changed(uid)  # Invalidate old routing cache
-                    done = "Home saved." if en else "Дом сохранён."
-                    await m.answer(f"{done}\n\n" + settings_card(u), reply_markup=kb)
+                    routing_changed(uid)  # old home numbers are stale from here on
+                    recalc = await recalc_block(u)
+                    saved = addr_saved_new(lang, label)
+                    tail = recalc if recalc else (recalc_failed(lang) if u.group else "")
+                    await m.answer(saved + (f"\n\n{tail}" if tail else ""), reply_markup=kb)
                 else:
                     pending.pop(uid, None)
                     await m.answer("Options expired, send the address again." if en else
@@ -544,7 +582,48 @@ async def main() -> None:
             pending[uid] = "group"
             await m.answer("ИДБ-26-14" if en else "Например: ИДБ-26-14", reply_markup=kb)
             return
-        if state == "note" or low.startswith(("покажи ", "show ")) or \
+        if state in ("note_add_custom", "note_view_custom", "note_del_custom"):
+            iso = parse_note_date(text)
+            if iso is None:
+                await m.answer(ask_custom_date(lang), reply_markup=kb)
+                return
+            label = note_label(iso)
+            if state == "note_add_custom":
+                note_tmp[uid] = {"op": "add", "date": iso}
+                pending[uid] = "note_text"
+                await m.answer(ask_note_text(lang, label), reply_markup=cancel_buttons(lang))
+            elif state == "note_view_custom":
+                pending.pop(uid, None)
+                await m.answer(note_card(lang, label, store.get_note(uid, iso)),
+                               reply_markup=note_item_buttons(lang, iso))
+            else:  # note_del_custom
+                pending.pop(uid, None)
+                existing = store.get_note(uid, iso)
+                if existing:
+                    t, kb2 = note_confirm_delete(lang, iso, label, existing)
+                    await m.answer(t, reply_markup=kb2)
+                else:
+                    await m.answer(note_card(lang, label, ""),
+                                   reply_markup=notes_menu_buttons(lang))
+            return
+        if state == "note_text":
+            data = note_tmp.get(uid, {})
+            iso = data.get("date")
+            if not iso:
+                pending.pop(uid, None)
+                await m.answer(notes_menu_text(lang), reply_markup=notes_menu_buttons(lang))
+                return
+            if not text:
+                await m.answer(ask_note_text(lang, note_label(iso)),
+                               reply_markup=cancel_buttons(lang))
+                return
+            store.set_note(uid, iso, text)
+            note_tmp.pop(uid, None)
+            pending.pop(uid, None)
+            await m.answer(note_saved(lang, note_label(iso), text),
+                           reply_markup=notes_menu_buttons(lang))
+            return
+        if low.startswith(("покажи ", "show ")) or \
                 (len(text) >= 10 and text[:10].replace("-", "").isdigit()):
             if low.startswith(("покажи ", "show ")):
                 d = text.split(None, 1)[1].strip() if len(text.split(None, 1)) > 1 else ""
@@ -563,61 +642,225 @@ async def main() -> None:
         await m.answer("Use the buttons or /start." if en else
                        "Не понял. Используйте кнопки или /start.", reply_markup=kb)
 
-    # --- Note flow text handlers ---
-    @dp.message(F.text)
-    async def note_text_handler(m: Message):
-        uid = m.from_user.id
-        u = store.get_user(uid)
-        lang, en = u.lang, u.lang == "en"
-        text = (m.text or "").strip()
-        state = pending.get(uid, "")
-        kb = kb_for(u.lang)
+    # --- Inline buttons: settings + notes (all callbacks answered; every
+    # --- path edits the message or deletes it, nothing hangs silently).
+    @dp.callback_query()
+    async def callbacks(cb: CallbackQuery):
+        uid = cb.from_user.id
+        data = cb.data or ""
+        await cb.answer()  # dismiss the spinner on every path
 
-        if state == "note_add_custom":
-            d = text.strip()
+        def fresh() -> UserSettings:
+            return store.get_user(uid)
+
+        async def safe_edit(text: str, reply_markup=None) -> None:
             try:
-                date.fromisoformat(d)
+                await cb.message.edit_text(text, reply_markup=reply_markup)
             except Exception:
-                await m.answer("Invalid date format. Use YYYY-MM-DD." if en else "Неверный формат даты. Используйте ГГГГ-ММ-ДД.", reply_markup=kb)
-                return
-            pending[uid] = {"op": "add", "date": d}
-            await m.answer("What to take / do?" if en else "Что взять / сделать?", reply_markup=kb)
-            return
+                await cb.message.answer(text, reply_markup=reply_markup)
 
-        if state == "note_view":
-            d = text.strip()
+        async def safe_delete() -> None:
             try:
-                date.fromisoformat(d)
+                await cb.message.delete()
             except Exception:
-                await m.answer("Invalid date format. Use YYYY-MM-DD." if en else "Неверный формат даты. Используйте ГГГГ-ММ-ДД.", reply_markup=kb)
-                return
-            note = store.get_note(uid, d)
-            await m.answer(f"{d}: {note or ('(empty)' if en else '(пусто)')}", reply_markup=kb)
-            return
+                pass
 
-        if state == "note_del":
-            d = text.strip()
-            try:
-                date.fromisoformat(d)
-            except Exception:
-                await m.answer("Invalid date format. Use YYYY-MM-DD." if en else "Неверный формат даты. Используйте ГГГГ-ММ-ДД.", reply_markup=kb)
-                return
-            store.delete_note(uid, d)
-            await m.answer("Deleted." if en else "Удалено.", reply_markup=kb)
-            return
+        async def edit_settings(extra: str = "") -> None:
+            u = fresh()
+            card = settings_card(u)
+            await safe_edit(card + (f"\n\n{extra}" if extra else ""),
+                            settings_buttons(u.lang))
 
-        if state == "note_add":
+        async def apply_routing_change() -> None:
+            """Save already done by caller: drop stale routing, refresh card + fresh recalc."""
+            routing_changed(uid)
+            await edit_settings(await recalc_block(fresh()))
+
+        def day_iso(which: str) -> str:
+            tz = ZoneInfo(settings.institution_tz)
+            today = datetime.now(tz).date()
+            return today.isoformat() if which == "today" else (today + timedelta(days=1)).isoformat()
+
+        async def show_note(iso: str) -> None:
+            u = fresh()
+            await safe_edit(note_card(u.lang, note_label(iso), store.get_note(uid, iso)),
+                            note_item_buttons(u.lang, iso))
+
+        async def ask_delete(iso: str) -> None:
+            u = fresh()
+            existing = store.get_note(uid, iso)
+            if existing:
+                t, kb2 = note_confirm_delete(u.lang, iso, note_label(iso), existing)
+                await safe_edit(t, kb2)
+            else:
+                await safe_edit(note_card(u.lang, note_label(iso), ""),
+                                notes_menu_buttons(u.lang))
+
+        # --- cancel for text-input flows ---
+        if data == "op:cancel":
             pending.pop(uid, None)
-            data = pending.get(uid)
-            if not data or data.get("op") != "add":
-                return
-            d = data.get("date")
-            store.set_note(uid, d, text)
-            pending.pop(uid, None)
-            await m.answer("Note saved." if en else "Заметка сохранена.", reply_markup=kb)
+            addr_picks.pop(uid, None)
+            note_tmp.pop(uid, None)
+            await safe_delete()
             return
 
-    asyncio.create_task(scheduler_loop(bot, settings, store, deps))
+        # --- settings ---
+        if data == "set:menu":
+            await edit_settings()
+            return
+        if data == "set:back":
+            await safe_delete()
+            return
+        if data == "set:group":
+            pending[uid] = "group"
+            await safe_edit(ask_new_group(fresh().lang), cancel_buttons(fresh().lang))
+            return
+        if data == "set:address":
+            pending[uid] = "address"
+            u = fresh()
+            await safe_edit(ask_new_address(u.lang), cancel_buttons(u.lang))
+            return
+        if data == "set:transport":
+            await safe_edit(ask_transport(fresh().lang), transport_buttons(fresh().lang))
+            return
+        if data.startswith("tr:"):
+            mode = data[3:]
+            if mode not in ("transit", "foot", "driving", "bike"):
+                return
+            u = fresh()
+            u.transport = mode
+            store.save_user(u)
+            await apply_routing_change()
+            return
+        if data == "set:buffer":
+            await safe_edit(ask_buffer(fresh().lang), buffer_buttons(fresh().lang))
+            return
+        if data.startswith("buf:"):
+            try:
+                n = max(0, min(120, int(data[4:])))
+            except ValueError:
+                return
+            u = fresh()
+            u.buffer_min = n
+            store.save_user(u)
+            await apply_routing_change()
+            return
+        if data == "set:notify":
+            await safe_edit(ask_notify(fresh().lang), notify_menu_buttons(fresh().lang))
+            return
+        if data == "ntfmenu:eve":
+            await safe_edit(ask_evening(fresh().lang), evening_buttons(fresh().lang))
+            return
+        if data == "ntfmenu:morn":
+            await safe_edit(ask_morning_lead(fresh().lang), morning_lead_buttons(fresh().lang))
+            return
+        if data.startswith("ntf:eve:"):
+            try:
+                parse_hhmm(data[len("ntf:eve:"):])
+            except Exception:
+                return
+            u = fresh()
+            u.evening_time = data[len("ntf:eve:"):]
+            store.save_user(u)
+            await edit_settings()
+            return
+        if data.startswith("ntf:morn:"):
+            try:
+                n = max(5, min(240, int(data[len("ntf:morn:"):])))
+            except ValueError:
+                return
+            u = fresh()
+            u.morning_min_before_exit = n
+            store.save_user(u)
+            await edit_settings()
+            return
+        if data == "set:lang":
+            await safe_edit(ask_lang(), lang_buttons())
+            return
+        if data in ("lang:ru", "lang:en"):
+            u = fresh()
+            u.lang = "en" if data.endswith("en") else "ru"
+            store.save_user(u)
+            await edit_settings()  # re-rendered in the NEW language
+            return
+
+        # --- notes ---
+        if data in ("note:menu",):
+            u = fresh()
+            await safe_edit(notes_menu_text(u.lang), notes_menu_buttons(u.lang))
+            return
+        if data == "note:back":
+            await safe_delete()
+            return
+        if data == "note:add":
+            u = fresh()
+            await safe_edit(ask_note_date(u.lang), note_date_buttons(u.lang, "nadd"))
+            return
+        if data in ("nadd:today", "nadd:tomorrow"):
+            iso = day_iso(data.split(":")[1])
+            note_tmp[uid] = {"op": "add", "date": iso}
+            pending[uid] = "note_text"
+            u = fresh()
+            await safe_edit(ask_note_text(u.lang, note_label(iso)), cancel_buttons(u.lang))
+            return
+        if data == "nadd:custom":
+            pending[uid] = "note_add_custom"
+            await safe_edit(ask_custom_date(fresh().lang), cancel_buttons(fresh().lang))
+            return
+        if data == "note:view":
+            u = fresh()
+            await safe_edit(ask_note_date(u.lang), note_date_buttons(u.lang, "nview"))
+            return
+        if data in ("nview:today", "nview:tomorrow"):
+            await show_note(day_iso(data.split(":")[1]))
+            return
+        if data == "nview:custom":
+            pending[uid] = "note_view_custom"
+            await safe_edit(ask_custom_date(fresh().lang), cancel_buttons(fresh().lang))
+            return
+        if data == "note:del":
+            u = fresh()
+            await safe_edit(ask_note_date(u.lang), note_date_buttons(u.lang, "ndel"))
+            return
+        if data in ("ndel:today", "ndel:tomorrow"):
+            await ask_delete(day_iso(data.split(":")[1]))
+            return
+        if data == "ndel:custom":
+            pending[uid] = "note_del_custom"
+            await safe_edit(ask_custom_date(fresh().lang), cancel_buttons(fresh().lang))
+            return
+        if data.startswith("note:edit:"):
+            iso = data[len("note:edit:"):]
+            try:
+                date.fromisoformat(iso)
+            except ValueError:
+                return
+            note_tmp[uid] = {"op": "edit", "date": iso}
+            pending[uid] = "note_text"
+            u = fresh()
+            await safe_edit(ask_note_text(u.lang, note_label(iso)), cancel_buttons(u.lang))
+            return
+        if data.startswith("note:delone:"):
+            iso = data[len("note:delone:"):]
+            try:
+                date.fromisoformat(iso)
+            except ValueError:
+                return
+            await ask_delete(iso)
+            return
+        if data.startswith("note:del:yes:"):
+            iso = data[len("note:del:yes:"):]
+            try:
+                date.fromisoformat(iso)
+            except ValueError:
+                return
+            store.delete_note(uid, iso)
+            u = fresh()
+            await safe_edit(note_deleted(u.lang, note_label(iso)),
+                            notes_menu_buttons(u.lang))
+            return
+
+    asyncio.create_task(scheduler_loop(bot, settings, store, deps, last_calc))
     await dp.start_polling(bot)
 
 

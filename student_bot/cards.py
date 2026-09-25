@@ -246,6 +246,28 @@ def format_telegram_day(label: str, d: EveningData, exit_line: str = "", lang: s
     return "\n".join(lines)
 
 
+def format_day_list(schedule, now, lang: str = "ru") -> str:
+    """Всё расписание дня одной простынёй: ◾ прошла, 🟡 идёт, ▫️ будет.
+    Чистая функция — «Сегодня» всегда показывает и фокус, и весь день."""
+    from datetime import timedelta
+
+    en = lang == "en"
+    if not schedule.active_lessons:
+        return "No classes today." if en else "Сегодня пар нет."
+    lines = []
+    for les in schedule.active_lessons:
+        end = les.ends_at or (les.starts_at + timedelta(minutes=90))
+        if end <= now:
+            mark = "◾"
+        elif les.starts_at <= now:
+            mark = "🟡"
+        else:
+            mark = "▫️"
+        room = (f", {_room(les.room, lang)}" if les.room else "")
+        lines.append(f"{mark} {les.starts_at.strftime('%H:%M')} — {les.subject}{room}")
+    return "\n".join(lines)
+
+
 # ---------- Push-шаблоны (iOS; отправки нет, только тексты) ----------
 
 def format_push_evening(d: EveningData, variant: str = "a", lang: str = "ru") -> PushMsg:

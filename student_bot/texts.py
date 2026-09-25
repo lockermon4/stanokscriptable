@@ -1,8 +1,13 @@
-"""Все тексты бота на русском и английском. Никакой логики, только строки.
-Язык: UserSettings.lang ("ru"/"en"); новым берётся из Telegram locale,
-меняется командой «язык en» / «language ru».
+"""Все тексты бота на русском и английском + инлайн-кнопки.
+Язык: UserSettings.lang ("ru"/"en"); новым берётся из Telegram locale.
+
+Чистые функции без состояния (тестируются напрямую). Callback-data короткие,
+префиксы: set:* (настройки), tr:* (транспорт), buf:* (запас), ntf* (уведомления),
+lang:* (язык), note:*/nadd:*|nview:*|ndel:* (заметки), op:cancel (отмена ввода).
 """
 from __future__ import annotations
+
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 RU = "ru"
 EN = "en"
@@ -36,6 +41,12 @@ def transport_name(code: str, lang: str) -> str:
     return code
 
 
+def ikb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=d) for t, d in row]
+                         for row in rows])
+
+
 # Кнопки меню: (ru, en, legacy_aliases)
 MENU_TODAY = ("📅 Сегодня", "📅 Today", ("Сегодня",))
 MENU_TOMORROW = ("🗓 Завтра", "🗓 Tomorrow", ("Завтра",))
@@ -61,41 +72,7 @@ def menu_match() -> dict[str, str]:
     return out
 
 
-def notes_menu_text(lang: str) -> str:
-    return "📝 Notes: add, view or delete." if lang == "en" else "📝 Заметки: добавить, посмотреть, удалить."
-
-
-def notes_menu_buttons(lang: str):
-    from .bot import ikb
-    if lang == "en":
-        return ikb([[("➕ Add note", "note:add")],
-                    [("👁 View", "note:view"), ("🗑 Delete", "note:del")],
-                    [("◀️ Back", "note:back")]])
-    return ikb([[("➕ Добавить заметку", "note:add")],
-                [("👁 Посмотреть", "note:view"), ("🗑 Удалить", "note:del")],
-                [("◀️ Назад", "note:back")]])
-
-
-def note_date_buttons(lang: str, prefix: str):
-    from .bot import ikb
-    if lang == "en":
-        rows = [
-            [("Today", f"{prefix}:today"), ("Tomorrow", f"{prefix}:tomorrow")],
-            [("Pick a date", f"{prefix}:custom")],
-            [("Cancel", "note:menu")],
-        ]
-    else:
-        rows = [
-            [("Today", f"{prefix}:today"), ("Tomorrow", f"{prefix}:tomorrow")],
-            [("Choose date", f"{prefix}:custom")],
-            [("Cancel", "note:menu")],
-        ]
-    return ikb(rows)
-
-
-def notes_menu_text(lang: str) -> str:
-    return "📝 Notes: add, view or delete." if lang == "en" else "📝 Заметки: добавить, посмотреть, удалить."
-
+# ---------- /start ----------
 
 def start_route(has_group: bool, has_home: bool) -> str:
     """Which /start branch: back | need_home | need_group | new."""
@@ -146,28 +123,6 @@ def ask_address(lang: str, group: str) -> str:
             f"или отправьте точку (скрепка → Геопозиция).")
 
 
-# ---------- настройки человеческим языком ----------
-
-def settings_view(group: str, home: str, transport: str, buffer_min: int,
-                  evening: str, morn_min: int, lang: str) -> str:
-    if lang == EN:
-        return (f"⚙️ Settings\nGroup: {group or '—'}\nHome: {home or '—'}\n"
-                f"Transport: {transport_name(transport, lang)}\n"
-                f"Buffer: {minutes(buffer_min, lang)}\n"
-                f"Evening reminder: {evening}\n"
-                f"Morning reminder: {minutes(morn_min, lang)} before leaving\n\n"
-                f"To change, send: address <text> (or a pin) | transport <transit/foot/driving/bike> | "
-                f"buffer <min> | evening <HH:MM> | morning <min> | group <name> | language <ru/en>")
-    return (f"⚙️ Настройки\nГруппа: {group or '—'}\nДом: {home or '—'}\n"
-            f"Способ передвижения: {transport_name(transport, lang)}\n"
-            f"Запас: {minutes(buffer_min, lang)}\n"
-            f"Вечернее уведомление: {evening}\n"
-            f"Утреннее уведомление: за {minutes(morn_min, lang)} до выхода\n\n"
-            f"Чтобы изменить, пришлите: адрес <текст> (или точку) | транспорт "
-            f"<transit/foot/driving/bike> | запас <мин> | вечер <ЧЧ:ММ> | утро <мин> | "
-            f"группа <название> | язык <ru/en>")
-
-
 def need_group_first(lang: str) -> str:
     return "First choose your group via /start." if lang == EN else \
         "Сначала укажите группу через /start."
@@ -182,11 +137,30 @@ def need_home(lang: str) -> str:
             "(скрепка → Геопозиция). Без него время выхода посчитать не выйдет.")
 
 
+# ---------- настройки ----------
+
+def settings_view(group: str, home: str, transport: str, buffer_min: int,
+                  evening: str, morn_min: int, lang: str) -> str:
+    """Текущие значения человеческим языком + подсказка про кнопки."""
+    if lang == EN:
+        return (f"⚙️ Settings\nGroup: {group or '—'}\nHome: {home or '—'}\n"
+                f"Transport: {transport_name(transport, lang)}\n"
+                f"Buffer: {minutes(buffer_min, lang)}\n"
+                f"Evening reminder: {evening}\n"
+                f"Morning reminder: {minutes(morn_min, lang)} before leaving\n\n"
+                f"Use the buttons below to change anything.")
+    return (f"⚙️ Настройки\nГруппа: {group or '—'}\nДом: {home or '—'}\n"
+            f"Способ передвижения: {transport_name(transport, lang)}\n"
+            f"Запас: {minutes(buffer_min, lang)}\n"
+            f"Вечернее уведомление: {evening}\n"
+            f"Утреннее уведомление: за {minutes(morn_min, lang)} до выхода\n\n"
+            f"Чтобы изменить — кнопки ниже.")
+
+
 def settings_buttons(lang: str):
-    from .bot import ikb
-    if lang == "en":
+    if lang == EN:
         return ikb([[("Change group", "set:group"), ("Change address", "set:address")],
-                    [("Transport", "set:transport"), ("Buffer", "set:buffer")],
+                    [("Transport", "set:transport"), ("Time buffer", "set:buffer")],
                     [("Notifications", "set:notify"), ("Language", "set:lang")],
                     [("◀️ Back", "set:back")]])
     return ikb([[("Изменить группу", "set:group"), ("Изменить адрес", "set:address")],
@@ -196,17 +170,117 @@ def settings_buttons(lang: str):
 
 
 def transport_buttons(lang: str):
-    from .bot import ikb
-    from .texts import transport_name
-
     rows = [[(transport_name(c, lang), f"tr:{c}")] for c in ("transit", "foot", "driving", "bike")]
-    rows.append([("◀️ Back", "set:menu")] if lang == "en" else [("◀️ Назад", "set:menu")])
+    rows.append([("◀️ Back", "set:menu")] if lang == EN else [("◀️ Назад", "set:menu")])
     return ikb(rows)
 
 
+def buffer_buttons(lang: str):
+    rows = [[(minutes(n, lang), f"buf:{n}") for n in (5, 10, 15)],
+            [(minutes(n, lang), f"buf:{n}") for n in (20, 30)]]
+    rows.append([("◀️ Back", "set:menu")] if lang == EN else [("◀️ Назад", "set:menu")])
+    return ikb(rows)
+
+
+def notify_menu_buttons(lang: str):
+    if lang == EN:
+        return ikb([[("Evening time", "ntfmenu:eve"), ("Morning lead", "ntfmenu:morn")],
+                    [("◀️ Back", "set:menu")]])
+    return ikb([[("Вечернее время", "ntfmenu:eve"), ("Утреннее напоминание", "ntfmenu:morn")],
+                [("◀️ Назад", "set:menu")]])
+
+
+def evening_buttons(lang: str):
+    rows = [[(t, f"ntf:eve:{t}") for t in ("20:00", "20:30", "21:00")],
+            [(t, f"ntf:eve:{t}") for t in ("21:30", "22:00")]]
+    rows.append([("◀️ Back", "set:notify")] if lang == EN else [("◀️ Назад", "set:notify")])
+    return ikb(rows)
+
+
+def morning_lead_buttons(lang: str):
+    rows = [[(minutes(n, lang), f"ntf:morn:{n}") for n in (15, 30, 45)],
+            [(minutes(n, lang), f"ntf:morn:{n}") for n in (60, 90, 120)]]
+    rows.append([("◀️ Back", "set:notify")] if lang == EN else [("◀️ Назад", "set:notify")])
+    return ikb(rows)
+
+
+def lang_buttons():
+    return ikb([[("Русский", "lang:ru"), ("English", "lang:en")],
+                [("◀️ Назад", "set:menu")]])
+
+
+def cancel_buttons(lang: str):
+    return ikb([[("Отмена", "op:cancel")]] if lang != EN else [[("Cancel", "op:cancel")]])
+
+
+def ask_new_group(lang: str) -> str:
+    if lang == EN:
+        return "Send the new group name, e.g. ИДБ-26-14 (or press Cancel)."
+    return "Пришлите новое название группы, например ИДБ-26-14 (или нажмите «Отмена»)."
+
+
+def ask_new_address(lang: str) -> str:
+    if lang == EN:
+        return ("Send the new home address in one line or a location pin (📎 → Location). "
+                "I'll verify it, save the coordinates and recalculate from the new home.")
+    return ("Пришлите новый домашний адрес одной строкой или точку (скрепка → Геопозиция). "
+            "Проверю его, сохраню координаты и пересчитаю дорогу от нового дома.")
+
+
+def addr_saved_new(lang: str, label: str) -> str:
+    if lang == EN:
+        return (f"Home saved: {label}.\nOld results are discarded — everything below "
+                f"is calculated from the new home.")
+    return (f"Дом сохранён: {label}.\nСтарые результаты сброшены — всё ниже "
+            f"посчитано от нового дома.")
+
+def addr_not_found(lang: str) -> str:
+    if lang == EN:
+        return ("Couldn't verify that address, so I did NOT save it and did NOT "
+                "recalculate. Send it more precisely or send a location pin.")
+    return ("Не смог проверить этот адрес, поэтому НЕ сохранил его и НЕ пересчитывал. "
+            "Пришлите точнее или отправьте точку.")
+
+
+def ask_transport(lang: str) -> str:
+    return "Choose how you get to classes:" if lang == EN else "Выберите, как добираетесь до пар:"
+
+
+def ask_buffer(lang: str) -> str:
+    return "Choose the safety buffer:" if lang == EN else "Выберите запас времени:"
+
+
+def ask_notify(lang: str) -> str:
+    return "Which reminder to change?" if lang == EN else "Какое уведомление меняем?"
+
+
+def ask_evening(lang: str) -> str:
+    return "Evening reminder time:" if lang == EN else "Время вечернего уведомления:"
+
+
+def ask_morning_lead(lang: str) -> str:
+    return "How far before leaving to remind in the morning?" if lang == EN \
+        else "За сколько до выхода напоминать утром?"
+
+
+def ask_lang() -> str:
+    return "Язык / Language:"
+
+
+def recalc_failed(lang: str) -> str:
+    if lang == EN:
+        return "Saved, but the route from the new home can't be calculated yet — no old numbers shown."
+    return "Сохранено, но дорогу от нового дома пока посчитать не вышло — старые цифры не показываю."
+
+
+# ---------- заметки ----------
+
+def notes_menu_text(lang: str) -> str:
+    return "📝 Notes: add, view or delete." if lang == EN else "📝 Заметки: добавить, посмотреть, удалить."
+
+
 def notes_menu_buttons(lang: str):
-    from .bot import ikb
-    if lang == "en":
+    if lang == EN:
         return ikb([[("➕ Add note", "note:add")],
                     [("👁 View", "note:view"), ("🗑 Delete", "note:del")],
                     [("◀️ Back", "note:back")]])
@@ -216,8 +290,8 @@ def notes_menu_buttons(lang: str):
 
 
 def note_date_buttons(lang: str, prefix: str):
-    from .bot import ikb
-    if lang == "en":
+    """prefix: nadd | nview | ndel. RU-метки на русском (фикс)."""
+    if lang == EN:
         rows = [
             [("Today", f"{prefix}:today"), ("Tomorrow", f"{prefix}:tomorrow")],
             [("Pick a date", f"{prefix}:custom")],
@@ -225,518 +299,59 @@ def note_date_buttons(lang: str, prefix: str):
         ]
     else:
         rows = [
-            [("Today", f"{prefix}:today"), ("Tomorrow", f"{prefix}:tomorrow")],
-            [("Choose date", f"{prefix}:custom")],
-            [("Cancel", "note:menu")],
+            [("Сегодня", f"{prefix}:today"), ("Завтра", f"{prefix}:tomorrow")],
+            [("Выбрать дату", f"{prefix}:custom")],
+            [("Отмена", "note:menu")],
         ]
     return ikb(rows)
 
 
-def notes_menu_text(lang: str) -> str:
-    return "📝 Notes: add, view or delete." if lang == "en" else "📝 Заметки: добавить, посмотреть, удалить."
+def ask_note_date(lang: str) -> str:
+    return "Which date is the note for?" if lang == EN else "На какую дату заметка?"
 
 
-def start_route(has_group: bool, has_home: bool) -> str:
-    """Which /start branch: back | need_home | need_group | new."""
-    if has_group and has_home:
-        return "back"
-    if has_group:
-        return "need_home"
-    if has_home:
-        return "need_group"
-    return "new"
+def ask_custom_date(lang: str) -> str:
+    return "Send the date as YYYY-MM-DD." if lang == EN else "Пришлите дату в виде ГГГГ-ММ-ДД."
 
 
-def start_new(lang: str) -> str:
+def ask_note_text(lang: str, date_label: str) -> str:
     if lang == EN:
-        return ("Hi! I show the STANKIN timetable and calculate when to leave home "
-                "to catch your first class. 📚🏃\n\nFirst, choose your group — type it, "
-                "e.g. ИДБ-26-14")
-    return ("Привет! Я показываю расписание СТАНКИН и считаю, во сколько выйти "
-            "из дома, чтобы успеть на первую пару. 📚🏃\n\nСначала выберите группу — "
-            "напишите её, например: ИДБ-26-14")
+        return f"Note for {date_label}. What to take or do?"
+    return f"Заметка на {date_label}. Что нужно взять или сделать?"
 
 
-def start_back(lang: str) -> str:
-    return "Welcome back! 👋" if lang == EN else "С возвращением! 👋"
-
-
-def start_need_home(lang: str, group: str) -> str:
+def note_saved(lang: str, date_label: str, text: str) -> str:
     if lang == EN:
-        return (f"Welcome back! Your group is {group}. One step left: add your home "
-                f"address — type it or send a location pin (📎 → Location).")
-    return (f"С возвращением! Ваша группа — {group}. Остался один шаг: добавьте "
-            f"домашний адрес — напишите текстом или отправьте точку (скрепка → Геопозиция).")
+        return f"✅ Saved for {date_label}: {text}"
+    return f"✅ Сохранено на {date_label}: {text}"
 
 
-def start_need_group(lang: str) -> str:
+def note_card(lang: str, date_label: str, note: str) -> str:
+    body = note if note else ("(empty)" if lang == EN else "(пусто)")
     if lang == EN:
-        return ("Welcome back! Your home is saved. Now choose your group — type it, "
-                "e.g. ИДБ-26-14")
-    return ("С возвращением! Дом сохранён. Теперь выберите группу — напишите её, "
-            "например: ИДБ-26-14")
+        return f"📝 {date_label}: {body}"
+    return f"📝 {date_label}: {body}"
 
 
-def ask_address(lang: str, group: str) -> str:
+def note_item_buttons(lang: str, date_iso: str):
     if lang == EN:
-        return (f"Group: {group}. Now your home address — type it in one line or "
-                f"send a location pin (📎 → Location).")
-    return (f"Группа: {group}. Теперь домашний адрес — напишите одной строкой "
-            f"или отправьте точку (скрепка → Геопозиция).")
+        return ikb([[("✏️ Edit", f"note:edit:{date_iso}"), ("🗑 Delete", f"note:delone:{date_iso}")],
+                    [("◀️ Back", "note:menu")]])
+    return ikb([[("✏️ Изменить", f"note:edit:{date_iso}"), ("🗑 Удалить", f"note:delone:{date_iso}")],
+                [("◀️ Назад", "note:menu")]])
 
 
-# ---------- настройки человеческим языком ----------
-
-def settings_view(group: str, home: str, transport: str, buffer_min: int,
-                  evening: str, morn_min: int, lang: str) -> str:
+def note_confirm_delete(lang: str, date_iso: str, date_label: str, note: str):
+    txt = note_card(lang, date_label, note)
     if lang == EN:
-        return (f"⚙️ Settings\nGroup: {group or '—'}\nHome: {home or '—'}\n"
-                f"Transport: {transport_name(transport, lang)}\n"
-                f"Buffer: {minutes(buffer_min, lang)}\n"
-                f"Evening reminder: {evening}\n"
-                f"Morning reminder: {minutes(morn_min, lang)} before leaving\n\n"
-                f"To change, send: address <text> (or a pin) | transport <transit/foot/driving/bike> | "
-                f"buffer <min> | evening <HH:MM> | morning <min> | group <name> | language <ru/en>")
-    return (f"⚙️ Настройки\nГруппа: {group or '—'}\nДом: {home or '—'}\n"
-            f"Способ передвижения: {transport_name(transport, lang)}\n"
-            f"Запас: {minutes(buffer_min, lang)}\n"
-            f"Вечернее уведомление: {evening}\n"
-            f"Утреннее уведомление: за {minutes(morn_min, lang)} до выхода\n\n"
-            f"Чтобы изменить, пришлите: адрес <текст> (или точку) | транспорт "
-            f"<transit/foot/driving/bike> | запас <мин> | вечер <ЧЧ:ММ> | утро <мин> | "
-            f"группа <название> | язык <ru/en>")
+        return txt + "\nDelete this note?", ikb([[("Yes, delete", f"note:del:yes:{date_iso}"),
+                                                  ("Cancel", "note:menu")]])
+    return txt + "\nУдалить эту заметку?", ikb([[("Да, удалить", f"note:del:yes:{date_iso}"),
+                                                 ("Отмена", "note:menu")]])
 
 
-def need_group_first(lang: str) -> str:
-    return "First choose your group via /start." if lang == EN else \
-        "Сначала укажите группу через /start."
-
-
-def need_home(lang: str) -> str:
-    if lang == EN:
-        return ("Add your home address first: type it (e.g. \"ul. Ostrovityanova, 33А\") "
-                "or send a location pin (📎 → Location). I can't calculate the exit time without it.")
-    return ("Сначала добавьте домашний адрес: напишите его текстом "
-            "(например, «ул. Островитянова, 33А») или отправьте точку "
-            "(скрепка → Геопозиция). Без него время выхода посчитать не выйдет.")
-
-
-def settings_buttons(lang: str):
-    from .bot import ikb
-    if lang == "en":
-        return ikb([[("Change group", "set:group"), ("Change address", "set:address")],
-                    [("Transport", "set:transport"), ("Buffer", "set:buffer")],
-                    [("Notifications", "set:notify"), ("Language", "set:lang")],
-                    [("◀️ Back", "set:back")]])
-    return ikb([[("Изменить группу", "set:group"), ("Изменить адрес", "set:address")],
-                [("Способ передвижения", "set:transport"), ("Запас времени", "set:buffer")],
-                [("Время уведомлений", "set:notify"), ("Язык", "set:lang")],
-                [("◀️ Назад", "set:back")]])
-
-
-def transport_buttons(lang: str):
-    from .bot import ikb
-    from .texts import transport_name
-
-    rows = [[(transport_name(c, lang), f"tr:{c}")] for c in ("transit", "foot", "driving", "bike")]
-    rows.append([("◀️ Back", "set:menu")] if lang == "en" else [("◀️ Назад", "set:menu")])
-    return ikb(rows)
-
-
-def notes_menu_buttons(lang: str):
-    from .bot import ikb
-    if lang == "en":
-        return ikb([[("➕ Add note", "note:add")],
-                    [("👁 View", "note:view"), ("🗑 Delete", "note:del")],
-                    [("◀️ Back", "note:back")]])
-    return ikb([[("➕ Добавить заметку", "note:add")],
-                [("👁 Посмотреть", "note:view"), ("🗑 Удалить", "note:del")],
-                [("◀️ Назад", "note:back")]])
-
-
-def note_date_buttons(lang: str, prefix: str):
-    from .bot import ikb
-    if lang == "en":
-        rows = [
-            [("Today", f"{prefix}:today"), ("Tomorrow", f"{prefix}:tomorrow")],
-            [("Pick a date", f"{prefix}:custom")],
-            [("Cancel", "note:menu")],
-        ]
-    else:
-        rows = [
-            [("Today", f"{prefix}:today"), ("Tomorrow", f"{prefix}:tomorrow")],
-            [("Choose date", f"{prefix}:custom")],
-            [("Cancel", "note:menu")],
-        ]
-    return ikb(rows)
-
-
-def notes_menu_text(lang: str) -> str:
-    return "📝 Notes: add, view or delete." if lang == "en" else "📝 Заметки: добавить, посмотреть, удалить."
-
-
-def start_route(has_group: bool, has_home: bool) -> str:
-    """Which /start branch: back | need_home | need_group | new."""
-    if has_group and has_home:
-        return "back"
-    if has_group:
-        return "need_home"
-    if has_home:
-        return "need_group"
-    return "new"
-
-
-def start_new(lang: str) -> str:
-    if lang == EN:
-        return ("Hi! I show the STANKIN timetable and calculate when to leave home "
-                "to catch your first class. 📚🏃\n\nFirst, choose your group — type it, "
-                "e.g. ИДБ-26-14")
-    return ("Привет! Я показываю расписание СТАНКИН и считаю, во сколько выйти "
-            "из дома, чтобы успеть на первую пару. 📚🏃\n\nСначала выберите группу — "
-            "напишите её, например: ИДБ-26-14")
-
-
-def start_back(lang: str) -> str:
-    return "Welcome back! 👋" if lang == EN else "С возвращением! 👋"
-
-
-def start_need_home(lang: str, group: str) -> str:
-    if lang == EN:
-        return (f"Welcome back! Your group is {group}. One step left: add your home "
-                f"address — type it or send a location pin (📎 → Location).")
-    return (f"С возвращением! Ваша группа — {group}. Остался один шаг: добавьте "
-            f"домашний адрес — напишите текстом или отправьте точку (скрепка → Геопозиция).")
-
-
-def start_need_group(lang: str) -> str:
-    if lang == EN:
-        return ("Welcome back! Your home is saved. Now choose your group — type it, "
-                "e.g. ИДБ-26-14")
-    return ("С возвращением! Дом сохранён. Теперь выберите группу — напишите её, "
-            "например: ИДБ-26-14")
-
-
-def ask_address(lang: str, group: str) -> str:
-    if lang == EN:
-        return (f"Group: {group}. Now your home address — type it in one line or "
-                f"send a location pin (📎 → Location).")
-    return (f"Группа: {group}. Теперь домашний адрес — напишите одной строкой "
-            f"или отправьте точку (скрепка → Геопозиция).")
-
-
-# ---------- настройки человеческим языком ----------
-
-def settings_view(group: str, home: str, transport: str, buffer_min: int,
-                  evening: str, morn_min: int, lang: str) -> str:
-    if lang == EN:
-        return (f"⚙️ Settings\nGroup: {group or '—'}\nHome: {home or '—'}\n"
-                f"Transport: {transport_name(transport, lang)}\n"
-                f"Buffer: {minutes(buffer_min, lang)}\n"
-                f"Evening reminder: {evening}\n"
-                f"Morning reminder: {minutes(morn_min, lang)} before leaving\n\n"
-                f"To change, send: address <text> (or a pin) | transport <transit/foot/driving/bike> | "
-                f"buffer <min> | evening <HH:MM> | morning <min> | group <name> | language <ru/en>")
-    return (f"⚙️ Настройки\nГруппа: {group or '—'}\nДом: {home or '—'}\n"
-            f"Способ передвижения: {transport_name(transport, lang)}\n"
-            f"Запас: {minutes(buffer_min, lang)}\n"
-            f"Вечернее уведомление: {evening}\n"
-            f"Утреннее уведомление: за {minutes(morn_min, lang)} до выхода\n\n"
-            f"Чтобы изменить, пришлите: адрес <текст> (или точку) | транспорт "
-            f"<transit/foot/driving/bike> | запас <мин> | вечер <ЧЧ:ММ> | утро <мин> | "
-            f"группа <название> | язык <ru/en>")
-
-
-def need_group_first(lang: str) -> str:
-    return "First choose your group via /start." if lang == EN else \
-        "Сначала укажите группу через /start."
-
-
-def need_home(lang: str) -> str:
-    if lang == EN:
-        return ("Add your home address first: type it (e.g. \"ul. Ostrovityanova, 33А\") "
-                "or send a location pin (📎 → Location). I can't calculate the exit time without it.")
-    return ("Сначала добавьте домашний адрес: напишите его текстом "
-            "(например, «ул. Островитянова, 33А») или отправьте точку "
-            "(скрепка → Геопозиция). Без него время выхода посчитать не выйдет.")
-
-
-def settings_buttons(lang: str):
-    from .bot import ikb
-    if lang == "en":
-        return ikb([[("Change group", "set:group"), ("Change address", "set:address")],
-                    [("Transport", "set:transport"), ("Buffer", "set:buffer")],
-                    [("Notifications", "set:notify"), ("Language", "set:lang")],
-                    [("◀️ Back", "set:back")]])
-    return ikb([[("Изменить группу", "set:group"), ("Изменить адрес", "set:address")],
-                [("Способ передвижения", "set:transport"), ("Запас времени", "set:buffer")],
-                [("Время уведомлений", "set:notify"), ("Язык", "set:lang")],
-                [("◀️ Назад", "set:back")]])
-
-
-def transport_buttons(lang: str):
-    from .bot import ikb
-    from .texts import transport_name
-
-    rows = [[(transport_name(c, lang), f"tr:{c}")] for c in ("transit", "foot", "driving", "bike")]
-    rows.append([("◀️ Back", "set:menu")] if lang == "en" else [("◀️ Назад", "set:menu")])
-    return ikb(rows)
-
-
-def notes_menu_buttons(lang: str):
-    from .bot import ikb
-    if lang == "en":
-        return ikb([[("➕ Add note", "note:add")],
-                    [("👁 View", "note:view"), ("🗑 Delete", "note:del")],
-                    [("◀️ Back", "note:back")]])
-    return ikb([[("➕ Добавить заметку", "note:add")],
-                [("👁 Посмотреть", "note:view"), ("🗑 Удалить", "note:del")],
-                [("◀️ Назад", "note:back")]])
-
-
-def note_date_buttons(lang: str, prefix: str):
-    from .bot import ikb
-    if lang == "en":
-        rows = [
-            [("Today", f"{prefix}:today"), ("Tomorrow", f"{prefix}:tomorrow")],
-            [("Pick a date", f"{prefix}:custom")],
-            [("Cancel", "note:menu")],
-        ]
-    else:
-        rows = [
-            [("Today", f"{prefix}:today"), ("Tomorrow", f"{prefix}:tomorrow")],
-            [("Choose date", f"{prefix}:custom")],
-            [("Cancel", "note:menu")],
-        ]
-    return ikb(rows)
-
-
-def notes_menu_text(lang: str) -> str:
-    return "📝 Notes: add, view or delete." if lang == "en" else "📝 Заметки: добавить, посмотреть, удалить."
-
-
-def start_route(has_group: bool, has_home: bool) -> str:
-    """Which /start branch: back | need_home | need_group | new."""
-    if has_group and has_home:
-        return "back"
-    if has_group:
-        return "need_home"
-    if has_home:
-        return "need_group"
-    return "new"
-
-
-def start_new(lang: str) -> str:
-    if lang == EN:
-        return ("Hi! I show the STANKIN timetable and calculate when to leave home "
-                "to catch your first class. 📚🏃\n\nFirst, choose your group — type it, "
-                "e.g. ИДБ-26-14")
-    return ("Привет! Я показываю расписание СТАНКИН и считаю, во сколько выйти "
-            "из дома, чтобы успеть на первую пару. 📚🏃\n\nСначала выберите группу — "
-            "напишите её, например: ИДБ-26-14")
-
-
-def start_back(lang: str) -> str:
-    return "Welcome back! 👋" if lang == EN else "С возвращением! 👋"
-
-
-def start_need_home(lang: str, group: str) -> str:
-    if lang == EN:
-        return (f"Welcome back! Your group is {group}. One step left: add your home "
-                f"address — type it or send a location pin (📎 → Location).")
-    return (f"С возвращением! Ваша группа — {group}. Остался один шаг: добавьте "
-            f"домашний адрес — напишите текстом или отправьте точку (скрепка → Геопозиция).")
-
-
-def start_need_group(lang: str) -> str:
-    if lang == EN:
-        return ("Welcome back! Your home is saved. Now choose your group — type it, "
-                "e.g. ИДБ-26-14")
-    return ("С возвращением! Дом сохранён. Теперь выберите группу — напишите её, "
-            "например: ИДБ-26-14")
-
-
-def ask_address(lang: str, group: str) -> str:
-    if lang == EN:
-        return (f"Group: {group}. Now your home address — type it in one line or "
-                f"send a location pin (📎 → Location).")
-    return (f"Группа: {group}. Теперь домашний адрес — напишите одной строкой "
-            f"или отправьте точку (скрепка → Геопозиция).")
-
-
-# ---------- настройки человеческим языком ----------
-
-def settings_view(group: str, home: str, transport: str, buffer_min: int,
-                  evening: str, morn_min: int, lang: str) -> str:
-    if lang == EN:
-        return (f"⚙️ Settings\nGroup: {group or '—'}\nHome: {home or '—'}\n"
-                f"Transport: {transport_name(transport, lang)}\n"
-                f"Buffer: {minutes(buffer_min, lang)}\n"
-                f"Evening reminder: {evening}\n"
-                f"Morning reminder: {minutes(morn_min, lang)} before leaving\n\n"
-                f"To change, send: address <text> (or a pin) | transport <transit/foot/driving/bike> | "
-                f"buffer <min> | evening <HH:MM> | morning <min> | group <name> | language <ru/en>")
-    return (f"⚙️ Настройки\nГруппа: {group or '—'}\nДом: {home or '—'}\n"
-            f"Способ передвижения: {transport_name(transport, lang)}\n"
-            f"Запас: {minutes(buffer_min, lang)}\n"
-            f"Вечернее уведомление: {evening}\n"
-            f"Утреннее уведомление: за {minutes(morn_min, lang)} до выхода\n\n"
-            f"Чтобы изменить, пришлите: адрес <текст> (или точку) | транспорт "
-            f"<transit/foot/driving/bike> | запас <мин> | вечер <ЧЧ:ММ> | утро <мин> | "
-            f"группа <название> | язык <ru/en>")
-
-
-def need_group_first(lang: str) -> str:
-    return "First choose your group via /start." if lang == EN else \
-        "Сначала укажите группу через /start."
-
-
-def need_home(lang: str) -> str:
-    if lang == EN:
-        return ("Add your home address first: type it (e.g. \"ul. Ostrovityanova, 33А\") "
-                "or send a location pin (📎 → Location). I can't calculate the exit time without it.")
-    return ("Сначала добавьте домашний адрес: напишите его текстом "
-            "(например, «ул. Островитянова, 33А») или отправьте точку "
-            "(скрепка → Геопозиция). Без него время выхода посчитать не выйдет.")
-
-
-def settings_buttons(lang: str):
-    from .bot import ikb
-    if lang == "en":
-        return ikb([[("Change group", "set:group"), ("Change address", "set:address")],
-                    [("Transport", "set:transport"), ("Buffer", "set:buffer")],
-                    [("Notifications", "set:notify"), ("Language", "set:lang")],
-                    [("◀️ Back", "set:back")]])
-    return ikb([[("Изменить группу", "set:group"), ("Изменить адрес", "set:address")],
-                [("Способ передвижения", "set:transport"), ("Запас времени", "set:buffer")],
-                [("Время уведомлений", "set:notify"), ("Язык", "set:lang")],
-                [("◀️ Назад", "set:back")]])
-
-
-def transport_buttons(lang: str):
-    from .bot import ikb
-    from .texts import transport_name
-
-    rows = [[(transport_name(c, lang), f"tr:{c}")] for c in ("transit", "foot", "driving", "bike")]
-    rows.append([("◀️ Back", "set:menu")] if lang == "en" else [("◀️ Назад", "set:menu")])
-    return ikb(rows)
-
-
-def notes_menu_buttons(lang: str):
-    from .bot import ikb
-    if lang == "en":
-        return ikb([[("➕ Add note", "note:add")],
-                    [("👁 View", "note:view"), ("🗑 Delete", "note:del")],
-                    [("◀️ Back", "note:back")]])
-    return ikb([[("➕ Добавить заметку", "note:add")],
-                [("👁 Посмотреть", "note:view"), ("🗑 Удалить", "note:del")],
-                [("◀️ Назад", "note:back")]])
-
-
-def note_date_buttons(lang: str, prefix: str):
-    from .bot import ikb
-    if lang == "en":
-        rows = [
-            [("Today", f"{prefix}:today"), ("Tomorrow", f"{prefix}:tomorrow")],
-            [("Pick a date", f"{prefix}:custom")],
-            [("Cancel", "note:menu")],
-        ]
-    else:
-        rows = [
-            [("Today", f"{prefix}:today"), ("Tomorrow", f"{prefix}:tomorrow")],
-            [("Choose date", f"{prefix}:custom")],
-            [("Cancel", "note:menu")],
-        ]
-    return ikb(rows)
-
-
-def notes_menu_text(lang: str) -> str:
-    return "📝 Notes: add, view or delete." if lang == "en" else "📝 Заметки: добавить, посмотреть, удалить."
-
-
-def start_route(has_group: bool, has_home: bool) -> str:
-    """Which /start branch: back | need_home | need_group | new."""
-    if has_group and has_home:
-        return "back"
-    if has_group:
-        return "need_home"
-    if has_home:
-        return "need_group"
-    return "new"
-
-
-def start_new(lang: str) -> str:
-    if lang == EN:
-        return ("Hi! I show the STANKIN timetable and calculate when to leave home "
-                "to catch your first class. 📚🏃\n\nFirst, choose your group — type it, "
-                "e.g. ИДБ-26-14")
-    return ("Привет! Я показываю расписание СТАНКИН и считаю, во сколько выйти "
-            "из дома, чтобы успеть на первую пару. 📚🏃\n\nСначала выберите группу — "
-            "напишите её, например: ИДБ-26-14")
-
-
-def start_back(lang: str) -> str:
-    return "Welcome back! 👋" if lang == EN else "С возвращением! 👋"
-
-
-def start_need_home(lang: str, group: str) -> str:
-    if lang == EN:
-        return (f"Welcome back! Your group is {group}. One step left: add your home "
-                f"address — type it or send a location pin (📎 → Location).")
-    return (f"С возвращением! Ваша группа — {group}. Остался один шаг: добавьте "
-            f"домашний адрес — напишите текстом или отправьте точку (скрепка → Геопозиция).")
-
-
-def start_need_group(lang: str) -> str:
-    if lang == EN:
-        return ("Welcome back! Your home is saved. Now choose your group — type it, "
-                "e.g. ИДБ-26-14")
-    return ("С возвращением! Дом сохранён. Теперь выберите группу — напишите её, "
-            "например: ИДБ-26-14")
-
-
-def ask_address(lang: str, group: str) -> str:
-    if lang == EN:
-        return (f"Group: {group}. Now your home address — type it in one line or "
-                f"send a location pin (📎 → Location).")
-    return (f"Группа: {group}. Теперь домашний адрес — напишите одной строкой "
-            f"или отправьте точку (скрепка → Геопозиция).")
-
-
-# ---------- настройки человеческим языком ----------
-
-def settings_view(group: str, home: str, transport: str, buffer_min: int,
-                  evening: str, morn_min: int, lang: str) -> str:
-    if lang == EN:
-        return (f"⚙️ Settings\nGroup: {group or '—'}\nHome: {home or '—'}\n"
-                f"Transport: {transport_name(transport, lang)}\n"
-                f"Buffer: {minutes(buffer_min, lang)}\n"
-                f"Evening reminder: {evening}\n"
-                f"Morning reminder: {minutes(morn_min, lang)} before leaving\n\n"
-                f"To change, send: address <text> (or a pin) | transport <transit/foot/driving/bike> | "
-                f"buffer <min> | evening <HH:MM> | morning <min> | group <name> | language <ru/en>")
-    return (f"⚙️ Настройки\nГруппа: {group or '—'}\nДом: {home or '—'}\n"
-            f"Способ передвижения: {transport_name(transport, lang)}\n"
-            f"Запас: {minutes(buffer_min, lang)}\n"
-            f"Вечернее уведомление: {evening}\n"
-            f"Утреннее уведомление: за {minutes(morn_min, lang)} до выхода\n\n"
-            f"Чтобы изменить, пришлите: адрес <текст> (или точку) | транспорт "
-            f"<transit/foot/driving/bike> | запас <мин> | вечер <ЧЧ:ММ> | утро <мин> | "
-            f"группа <название> | язык <ru/en>")
-
-
-def need_group_first(lang: str) -> str:
-    return "First choose your group via /start." if lang == EN else \
-        "Сначала укажите группу через /start."
-
-
-def need_home(lang: str) -> str:
-    if lang == EN:
-        return ("Add your home address first: type it (e.g. \"ul. Ostrovityanova, 33А\") "
-                "or send a location pin (📎 → Location). I can't calculate the exit time without it.")
-    return ("Сначала добавьте домашний адрес: напишите его текстом "
-            "(например, «ул. Островитянова, 33А») или отправьте точку "
-            "(скрепка → Геопозиция). Без него время выхода посчитать не выйдет.")
-
+def note_deleted(lang: str, date_label: str) -> str:
+    return f"🗑 Deleted note for {date_label}." if lang == EN else f"🗑 Заметка на {date_label} удалена."
 
 
 def pretty_street(raw: str, fallback: str) -> tuple[str, str | None]:
