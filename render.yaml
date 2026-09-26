@@ -27,6 +27,8 @@ services:
         value: https://nominatim.openstreetmap.org
       - key: DATABASE_PATH
         value: bot_data.sqlite3
+      - key: DATABASE_URL
+        sync: false # Supabase Session pooler URI; задан — используется вместо sqlite
       - key: SCHEDULE_GROUPS_PATH
         value: /api/groups
       - key: SCHEDULE_PATH

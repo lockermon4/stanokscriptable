@@ -117,3 +117,46 @@ def test_foot_provider_parses_and_caches():
     assert run(f.foot_seconds(a, b)) == 507
     assert run(f.foot_seconds(a, b)) == 507
     assert calls["n"] == 1  # second call served from cache
+
+
+def _pg_url():
+    import os
+    return os.environ.get("TEST_DATABASE_URL", "")
+
+
+def test_postgres_backend_roundtrip():
+    """Живой Supabase/PG: users/notes/favorites/tokens + персистентность.
+    Skip без TEST_DATABASE_URL=postgresql://... ."""
+    import pytest
+    url = _pg_url()
+    if not url:
+        pytest.skip("no TEST_DATABASE_URL")
+    from student_bot.store import Store, UserSettings
+    s = Store(url)
+    try:
+        u = UserSettings(user_id=4242, group="ИДБ-26-14", home_address="дом",
+                         home_lat=55.1, home_lon=37.1, transport="metro",
+                         buffer_min=15, evening_time="20:30",
+                         morning_min_before_exit=45, lang="en")
+        s.save_user(u)
+        s.set_note(4242, "2026-09-26", "халат")
+        s.mark_sent(4242, "2026-09-26", "morn")
+        fid = s.add_favorite(4242, "Дом", "55.1,37.1", "55.2,37.2", "walk")
+        tok = s.issue_api_token(4242)
+        s2 = Store(url)  # новый инстанс = "рестарт"
+        try:
+            got = s2.get_user(4242)
+            assert (got.group, got.home_lat, got.buffer_min, got.lang) == \
+                ("ИДБ-26-14", 55.1, 15, "en")
+            assert s2.get_note(4242, "2026-09-26") == "халат"
+            assert s2.was_sent(4242, "2026-09-26", "morn") is True
+            assert [f.name for f in s2.list_favorites(4242)] == ["Дом"]
+            assert s2.user_id_by_token(tok) == 4242
+        finally:
+            s2.close()
+        assert s.delete_favorite(4242, fid) is True
+    finally:
+        with s._conn() as c:
+            for t in ("api_tokens", "favorites", "sent", "notes", "users"):
+                c.execute(f"DELETE FROM {t} WHERE user_id=?", (4242,))
+        s.close()

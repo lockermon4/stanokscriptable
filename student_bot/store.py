@@ -1,6 +1,14 @@
-"""SQLite storage for user settings + per-day notes. No addresses in logs."""
+"""Storage for user settings + notes + favorites + api tokens. No addresses in logs.
+
+Два бэкенда, один интерфейс: локальный файл/SQLite (тесты, локалка) или
+Postgres (Supabase в проде). Выбор по строке подключения:
+  Store("bot_data.sqlite3")  -> sqlite3
+  Store("postgresql://...")  -> psycopg + пул
+SQL пишется с плейсхолдерами `?`, для PG переписываются в `%s` в одном месте.
+"""
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from dataclasses import dataclass
 
@@ -55,48 +63,108 @@ class UserSettings:
     lang: str = "ru"
 
 
+class _Q:
+    """Тонкая обёртка над коннектом: переписывает `?` в `%s` для PG."""
+
+    def __init__(self, raw, pg: bool):
+        self._raw = raw
+        self._pg = pg
+
+    def execute(self, sql: str, params: tuple = ()):
+        if self._pg:
+            sql = sql.replace("?", "%s")
+        return self._raw.execute(sql, params)
+
+
 class Store:
-    def __init__(self, path: str):
-        self.path = path
+    def __init__(self, path_or_url: str):
+        self.path = path_or_url
+        self._pg = path_or_url.startswith("postgres://") or \
+            path_or_url.startswith("postgresql://")
+        self._pool = None
+        if self._pg:
+            from psycopg_pool import ConnectionPool
+            from psycopg.rows import dict_row
+
+            # Пул держит тёплые коннекты (Supabase/pooler не любят частые
+            # переподключения), транзакции коммитятся выходом из контекста.
+            self._pool = ConnectionPool(
+                path_or_url, min_size=1, max_size=4, open=True,
+                kwargs={"row_factory": dict_row, "connect_timeout": 10})
         self._init()
 
-    def _conn(self) -> sqlite3.Connection:
-        c = sqlite3.connect(self.path)
-        c.row_factory = sqlite3.Row
-        return c
+    def close(self) -> None:
+        if self._pool is not None:
+            try:
+                self._pool.close()
+            except Exception:
+                pass
+            self._pool = None
+
+    @contextlib.contextmanager
+    def _conn(self):
+        """Единая точка: `with self._conn() as c: c.execute(sql, params)`.
+        SQLite коммитит выходом, PG — средствами пула; `?` -> `%s` для PG."""
+        if self._pg:
+            assert self._pool is not None
+            with self._pool.connection() as conn:
+                yield _Q(conn, pg=True)
+        else:
+            raw = sqlite3.connect(self.path)
+            raw.row_factory = sqlite3.Row
+            try:
+                yield _Q(raw, pg=False)
+                raw.commit()
+            finally:
+                try:
+                    raw.close()
+                except Exception:
+                    pass
 
     def _init(self) -> None:
+        users_ddl = (
+            """CREATE TABLE IF NOT EXISTS users(
+            user_id BIGINT PRIMARY KEY, sgroup TEXT DEFAULT '',
+            home_address TEXT DEFAULT '', home_lat DOUBLE PRECISION,
+            home_lon DOUBLE PRECISION, transport TEXT DEFAULT 'metro',
+            buffer_min INTEGER DEFAULT 10, evening_time TEXT DEFAULT '21:00',
+            morning_min_before_exit INTEGER DEFAULT 60, lang TEXT DEFAULT 'ru')"""
+            if self._pg else
+            """CREATE TABLE IF NOT EXISTS users(
+            user_id INTEGER PRIMARY KEY, sgroup TEXT DEFAULT '',
+            home_address TEXT DEFAULT '', transport TEXT DEFAULT 'metro',
+            buffer_min INTEGER DEFAULT 10, evening_time TEXT DEFAULT '21:00',
+            morning_min_before_exit INTEGER DEFAULT 60)"""
+        )
+        int_pk = "BIGINT" if self._pg else "INTEGER"
+        fav_id = "id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY" \
+            if self._pg else "id INTEGER PRIMARY KEY AUTOINCREMENT"
         with self._conn() as c:
+            c.execute(users_ddl)
+            if not self._pg:
+                for col in ("home_lat REAL", "home_lon REAL", "lang TEXT DEFAULT 'ru'"):
+                    try:
+                        c.execute(f"ALTER TABLE users ADD COLUMN {col}")
+                    except Exception:
+                        pass  # already migrated
             c.execute(
-                """CREATE TABLE IF NOT EXISTS users(
-                user_id INTEGER PRIMARY KEY, sgroup TEXT DEFAULT '',
-                home_address TEXT DEFAULT '', transport TEXT DEFAULT 'metro',
-                buffer_min INTEGER DEFAULT 10, evening_time TEXT DEFAULT '21:00',
-                morning_min_before_exit INTEGER DEFAULT 60)"""
-            )
-            for col in ("home_lat REAL", "home_lon REAL", "lang TEXT DEFAULT 'ru'"):
-                try:
-                    c.execute(f"ALTER TABLE users ADD COLUMN {col}")
-                except Exception:
-                    pass  # already migrated
-            c.execute(
-                """CREATE TABLE IF NOT EXISTS notes(
-                user_id INTEGER, day TEXT, text TEXT,
+                f"""CREATE TABLE IF NOT EXISTS notes(
+                user_id {int_pk}, day TEXT, text TEXT,
                 PRIMARY KEY(user_id, day))"""
             )
             c.execute(
-                """CREATE TABLE IF NOT EXISTS sent(
-                user_id INTEGER, day TEXT, kind TEXT,
+                f"""CREATE TABLE IF NOT EXISTS sent(
+                user_id {int_pk}, day TEXT, kind TEXT,
                 PRIMARY KEY(user_id, day, kind))"""
             )
             c.execute(
-                """CREATE TABLE IF NOT EXISTS favorites(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
+                f"""CREATE TABLE IF NOT EXISTS favorites(
+                {fav_id}, user_id {int_pk},
                 name TEXT, from_coords TEXT, to_coords TEXT, transport_type TEXT)"""
             )
             c.execute(
-                """CREATE TABLE IF NOT EXISTS api_tokens(
-                user_id INTEGER PRIMARY KEY, token TEXT, created_at TEXT)"""
+                f"""CREATE TABLE IF NOT EXISTS api_tokens(
+                user_id {int_pk} PRIMARY KEY, token TEXT, created_at TEXT)"""
             )
 
     def _row_user(self, r) -> UserSettings:
@@ -147,9 +215,11 @@ class Store:
         return r is not None
 
     def mark_sent(self, user_id: int, day: str, kind: str) -> None:
+        sql = ("INSERT INTO sent(user_id,day,kind) VALUES(?,?,?)"
+               " ON CONFLICT DO NOTHING") if self._pg else \
+            "INSERT OR IGNORE INTO sent(user_id,day,kind) VALUES(?,?,?)"
         with self._conn() as c:
-            c.execute("INSERT OR IGNORE INTO sent(user_id,day,kind) VALUES(?,?,?)",
-                      (user_id, day, kind))
+            c.execute(sql, (user_id, day, kind))
 
     def clear_sent(self, user_id: int, day: str, kind: str) -> None:
         with self._conn() as c:
@@ -177,12 +247,17 @@ class Store:
     # favorites: from_coords/to_coords = "lat,lon", transport_type = walk|metro
     def add_favorite(self, user_id: int, name: str, from_coords: str,
                      to_coords: str, transport_type: str) -> int:
+        params = (user_id, name.strip() or "Без названия", from_coords, to_coords,
+                  norm_transport(transport_type))
         with self._conn() as c:
+            if self._pg:
+                r = c.execute(
+                    "INSERT INTO favorites(user_id,name,from_coords,to_coords,transport_type)"
+                    " VALUES(?,?,?,?,?) RETURNING id", params).fetchone()
+                return int(r["id"]) if r else 0
             cur = c.execute(
                 "INSERT INTO favorites(user_id,name,from_coords,to_coords,transport_type)"
-                " VALUES(?,?,?,?,?)",
-                (user_id, name.strip() or "Без названия", from_coords, to_coords,
-                 norm_transport(transport_type)))
+                " VALUES(?,?,?,?,?)", params)
             return cur.lastrowid or 0
 
     def list_favorites(self, user_id: int) -> list[Favorite]:

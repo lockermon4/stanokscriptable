@@ -241,7 +241,7 @@ async def main() -> None:
         buildings: BuildingStore = load_buildings_yaml(settings.buildings_file)
     except FileNotFoundError:
         buildings = BuildingStore([])
-    store = Store(settings.database_path)
+    store = Store(settings.database_url or settings.database_path)
     sched_client = ScheduleClient(settings)
     geocoder = NominatimGeocoder(settings)
     routing = TwoGisRouting()  # ключ из $GIS_API_KEY; только пешком и метро
@@ -1080,6 +1080,10 @@ async def main() -> None:
     finally:
         sched_task.cancel()
         await stop_health_server(health_runner)
+        try:
+            store.close()
+        except Exception:
+            pass
         for c in (sched_client, geocoder, routing):
             try:
                 if hasattr(c, "close"):
