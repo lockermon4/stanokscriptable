@@ -7,7 +7,7 @@ import pytest
 
 from student_bot import routing as R
 from student_bot.routing import (NoMetroError, RouteOption, RoutingError,
-                                 SchemaNotDocumented, TwoGisRouting, cache_key,
+                                 TwoGisRouting, cache_key,
                                  get_metro_route, get_walking_route)
 from student_bot.store import fmt_coords, norm_transport, parse_coords
 
@@ -40,11 +40,56 @@ def test_no_key_refuses():
             os.environ["GIS_API_KEY"] = old
 
 
-def test_parsers_wait_for_docs():
-    with pytest.raises(SchemaNotDocumented):
-        R.parse_walk_payload({"routes": []})
-    with pytest.raises(SchemaNotDocumented):
-        R.parse_metro_payload({"routes": []})
+def test_parsers_real_schema():
+    from student_bot.routing import parse_metro_payload, parse_walk_payload
+    # Реальная форма walk (живой ответ 2026-09-26): числа + ui_*-тексты.
+    walk = {"message": None, "result": [{
+        "algorithm": "по основным улицам",
+        "total_distance": 20097, "total_duration": 16077,
+        "ui_total_distance": {"unit": "км", "value": "20"},
+        "ui_total_duration": "4 часа 27 мин",
+        "maneuvers": [{"comment": "start"}, {"comment": "finish"}]}]}
+    w = parse_walk_payload(walk)
+    assert len(w) == 1 and w[0].duration_s == 16077 and w[0].distance_m == 20097
+    assert w[0].summary == "4 часа 27 мин, 20 км (по основным улицам)"
+    assert w[0].steps == ()  # только start/finish — честно пусто
+    assert parse_walk_payload({"result": []}) == []
+    assert parse_walk_payload({}) == []
+
+    metro = [{
+        "id": "1", "total_duration": 2464, "total_distance": 8939,
+        "total_walkway_distance": "пешком 20 мин", "transfer_count": 1,
+        "crossing_count": 0, "pedestrian": False, "transport_types": ["metro"],
+        "movements": [
+            {"type": "walkway", "moving_duration": 300,
+             "waypoint": {"subtype": "pedestrian", "comment": "пешком 400 м"}},
+            {"type": "passage", "moving_duration": 412, "waiting_duration": 90,
+             "routes": None,
+             "metro": {"line_name": "Сокольническая линия",
+                       "ui_direction_suggest": "в сторону станции «Бульвар Рокоссовского»",
+                       "ui_station_count": "3 станции"},
+             "waypoint": {"name": "Сокольники", "subtype": "metro"}},
+            {"type": "crossing", "moving_duration": 120,
+             "waypoint": {"name": "Октябрьская", "comment": "переход"}},
+            {"type": "walkway", "moving_duration": 560,
+             "waypoint": {"subtype": "pedestrian", "comment": "пешком 800 м"}},
+        ]},
+        {"id": "2", "total_duration": 5000, "pedestrian": True, "transport_types": [],
+         "movements": []},  # пешеходный вариант — отсеивается
+    ]
+    m = parse_metro_payload(metro)
+    assert len(m) == 1
+    o = m[0]
+    assert o.duration_s == 2464 and o.transfers == 1 and o.distance_m == 8939
+    assert o.walk_before_s == 300 and o.walk_after_s == 560  # crossing не в счёт
+    assert "пешком 20 мин" in o.summary
+    assert o.steps[0] == "🚶 пешком 400 м"
+    assert "Сокольники" in o.steps[1] and "Сокольническая линия" in o.steps[1]
+    assert "Переход: Октябрьская" in o.steps[2]
+    # только пешком / пусто -> пусто (вызывающий код кидает NoMetroError)
+    assert parse_metro_payload([{"pedestrian": True}]) == []
+    assert parse_metro_payload([]) == []
+    assert parse_metro_payload({}) == []
 
 
 def test_4xx_is_fatal_no_retry():

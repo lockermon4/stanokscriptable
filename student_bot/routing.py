@@ -8,10 +8,8 @@
 Ключ: $GIS_API_KEY. Кэш in-memory: walk TTL 1 ч (пеший от пробок не зависит),
 metro TTL 15 мин. Ключ кэша: округление до 4 знаков + тип.
 
-ВАЖНО ПРО ПАРСИНГ: точные названия полей ответа берём ТОЛЬКО из документации
-2GIS (пользователь пришлёт JSON-схему отдельно). Названия полей изолированы в
-WALK_FIELDS / METRO_FIELDS ниже — сейчас там пометки TODO(docs), парсеры до их
-заполнения кидают SchemaNotDocumented с перечислением нужного. Ничего не выдумано.
+Схема ответов (прислана владельцем, 2026-09-26) зафиксирована в
+WALK_FIELDS / METRO_FIELDS — названия полей оттуда, не выдуманы.
 """
 from __future__ import annotations
 
@@ -38,10 +36,6 @@ class NoMetroError(RoutingError):
     """Метро между точками не прокладывается (пусто или только пешком)."""
 
 
-class SchemaNotDocumented(RoutingError):
-    """Парсер ждёт JSON-схему из документации — поля не выдуманы."""
-
-
 @dataclass(frozen=True)
 class RouteOption:
     mode: str  # "walk" | "metro"
@@ -56,48 +50,162 @@ class RouteOption:
 
 
 # ---------------------------------------------------------------------------
-# Маппинг полей ответа — ЗАПОЛНИТЬ ПО ДОКУМЕНТАЦИИ (сейчас заглушки).
-# Формат: (назначение, json-путь в ответе). Парсеры ниже упадут с понятной
-# ошибкой, пока хотя бы один путь не задан.
+# Маппинг полей ответа — из документации владельца (2026-09-26), не выдумано.
+# Walk: {"result": [{"total_distance": {"value", "text"},
+#                    "total_duration": {"value", "text"},
+#                    "maneuvers": [{"type", "comment", "outcoming_path"}]}]}
+# Metro: top-level list [{total_duration, total_distance, total_walkway_distance,
+#          transfer_count, crossing_count, pedestrian, transport_types,
+#          movements: [{type: passage|walkway|crossing, moving_duration,
+#                       waiting_duration,
+#                       metro: {line_name, ui_direction_suggest, ui_station_count},
+#                       platforms: {names}, (routes реально null),
+#                       waypoint: {name, subtype, comment}}]}]
+# (живьём 2026-09-26: routes=null, ветка в metro.line_name, тип crossing — переход)
 # ---------------------------------------------------------------------------
 WALK_FIELDS: dict[str, str] = {
-    # "routes": TODO(docs),      # список маршрутов
-    # "duration": TODO(docs),    # секунды в пути
-    # "distance": TODO(docs),    # метры
-    # "steps": TODO(docs),       # детализация по шагам (улицы)
+    # Реальный ответ (проверен живьём 2026-09-26): total_distance/total_duration —
+    # числа (метры/секунды); ui_total_distance {"unit", "value"},
+    # ui_total_duration — строка; maneuvers — только start/finish;
+    # algorithm — "по основным улицам" / "кратчайший".
+    "routes": "result",
+    "duration": "total_duration",
+    "distance": "total_distance",
+    "duration_text": "ui_total_duration",
+    "distance_text": "ui_total_distance",
+    "steps": "maneuvers[].comment",
 }
 METRO_FIELDS: dict[str, str] = {
-    # "routes": TODO(docs),        # список вариантов
-    # "duration": TODO(docs),      # секунды всего
-    # "transfers": TODO(docs),     # число пересадок
-    # "walk_before": TODO(docs),   # пешком до метро, секунды
-    # "walk_after": TODO(docs),    # пешком после метро, секунды
-    # "legs": TODO(docs),          # участки (станции/ветки) для steps
+    "routes": "<top-level list>",
+    "duration": "total_duration",
+    "distance": "total_distance",
+    "transfers": "transfer_count",
+    "walk_segments": "movements[type=walkway].moving_duration",
+    "legs": "movements",
 }
 
 
-def _need(schema: str, fields: dict[str, str]) -> None:
-    missing = [k for k, v in fields.items() if v.startswith("TODO")]
-    if missing or not fields:
-        raise SchemaNotDocumented(
-            f"{schema}: нет JSON-схемы, нужны пути: "
-            f"{sorted(set(list(fields) + ['routes', 'duration']))}. "
-            f"Пришлите документацию — заполню без выдумок.")
+def _num(v: Any) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f
 
 
 def parse_walk_payload(payload: dict) -> list[RouteOption]:
-    """Сырой JSON -> варианты пешком. Ждёт WALK_FIELDS из документации."""
-    _need("walk", WALK_FIELDS)
-    raise SchemaNotDocumented("walk: WALK_FIELDS не заполнены")  # сменится реализацией по докам
+    """Сырой JSON -> варианты пешком (поля из WALK_FIELDS)."""
+    options: list[RouteOption] = []
+    routes = payload.get("result") or []
+    if not isinstance(routes, list):
+        return options
+    for r in routes:
+        if not isinstance(r, dict):
+            continue
+        dur = _num(r.get("total_duration"))
+        if dur is None:
+            continue
+        dist = _num(r.get("total_distance")) or 0
+        dur_txt = r.get("ui_total_duration") or ""
+        dd = r.get("ui_total_distance") or {}
+        dist_txt = f"{dd.get('value', '')} {dd.get('unit', '')}".strip() if isinstance(dd, dict) else ""
+        summary = ", ".join(t for t in (dur_txt, dist_txt) if t) or f"{int(dur // 60)} мин"
+        algo = r.get("algorithm") or ""
+        if algo:
+            summary += f" ({algo})"
+        # maneuvers в реальности — только start/finish, пошаговых улиц нет
+        steps = tuple(m.get("comment") for m in (r.get("maneuvers") or [])
+                      if isinstance(m, dict) and m.get("comment") not in (None, "", "start", "finish"))
+        options.append(RouteOption(mode="walk", duration_s=int(dur), distance_m=int(dist),
+                                   summary=summary, steps=steps, raw=r))
+    return options
 
 
-def parse_metro_payload(payload: dict) -> list[RouteOption]:
-    """Сырой JSON -> варианты на метро. Ждёт METRO_FIELDS из документации.
+def _metro_steps(movements: list) -> tuple[str, ...]:
+    out: list[str] = []
+    for m in movements:
+        if not isinstance(m, dict):
+            continue
+        wp = m.get("waypoint") or {}
+        mtype = m.get("type")
+        if mtype == "passage":
+            # Реально: routes=null, данные в metro{line_name, ui_direction_suggest,
+            # ui_station_count} + platforms{names}; waypoint.name — посадка.
+            meta = m.get("metro") or {}
+            line = meta.get("line_name") or ""
+            station = wp.get("name") or ""
+            direction = meta.get("ui_direction_suggest") or ""
+            count = meta.get("ui_station_count") or ""
+            move = _num(m.get("moving_duration")) or 0
+            wait = _num(m.get("waiting_duration")) or 0
+            tail = f" ~{int(move // 60)} мин" + \
+                (f" + ожидание ~{int(wait // 60)} мин" if wait > 0 else "")
+            info = ", ".join(t for t in (direction, count) if t)
+            head = f"🚇 {station}" + (f" → {line}" if line else "") + \
+                (f" ({info})" if info else "")
+            out.append(head + tail)
+        elif mtype == "walkway":
+            comment = wp.get("comment") or "пешком"
+            out.append(f"🚶 {comment}")
+        elif mtype == "crossing":
+            name = wp.get("name") or ""
+            out.append(f"🚶 Переход: {name}" if name else "🚶 Переход")
+    return tuple(out)
 
-    Отдельно: если эндпоинт вернул пустоту или только пешеходный вариант
-    (без участков метро) — кидать NoMetroError, см. get_metro_route()."""
-    _need("metro", METRO_FIELDS)
-    raise SchemaNotDocumented("metro: METRO_FIELDS не заполнены")  # сменится реализацией по докам
+
+def _metro_walk_ends(movements: list) -> tuple[int, int]:
+    """Пешком до первого проезда и после последнего (секунды)."""
+    before, after = 0, 0
+    seen_passage = False
+    for m in movements:
+        if not isinstance(m, dict):
+            continue
+        if m.get("type") == "passage":
+            seen_passage = True
+            continue
+        if m.get("type") == "walkway":
+            d = int(_num(m.get("moving_duration")) or 0)
+            if seen_passage:
+                after += d
+            else:
+                before += d
+    return before, after
+
+
+def parse_metro_payload(payload: Any) -> list[RouteOption]:
+    """Сырой JSON -> варианты на метро (поля из METRO_FIELDS).
+
+    Эндпоинт может вернуть пешеходный вариант (pedestrian: true) или пустоту —
+    такие отсеиваем; если метро-вариантов не осталось — пустой список
+    (вызывающий код кидает NoMetroError)."""
+    items = payload if isinstance(payload, list) else (payload.get("result") or [])
+    if not isinstance(items, list):
+        return []
+    options: list[RouteOption] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        if it.get("pedestrian"):
+            continue  # только пешком, не метро
+        tt = it.get("transport_types") or []
+        if tt and "metro" not in tt:
+            continue
+        dur = _num(it.get("total_duration"))
+        if dur is None:
+            continue
+        movements = it.get("movements") or []
+        before, after = _metro_walk_ends(movements)
+        transfers = int(_num(it.get("transfer_count")) or 0)
+        dist = int(_num(it.get("total_distance")) or 0)
+        walk_txt = it.get("total_walkway_distance") or ""
+        ch = "пересадка" if transfers == 1 else ("пересадки" if 2 <= transfers <= 4 else "пересадок")
+        summary = f"{int(dur // 60)} мин, {transfers} {ch}" + \
+            (f", {walk_txt}" if walk_txt else "")
+        options.append(RouteOption(mode="metro", duration_s=int(dur), distance_m=dist,
+                                   transfers=transfers, walk_before_s=before,
+                                   walk_after_s=after, summary=summary,
+                                   steps=_metro_steps(movements), raw=it))
+    return options
 
 
 def cache_key(fr: tuple[float, float], to: tuple[float, float], kind: str) -> tuple:
@@ -124,7 +232,7 @@ class TwoGisRouting:
             return hit[1]
         return None
 
-    async def _post(self, url: str, body: dict) -> dict:
+    async def _post(self, url: str, body: dict) -> Any:
         if not self.key:
             raise RoutingError("GIS_API_KEY не задан (env). Маршрут посчитать не могу.")
         params = {"key": self.key}
@@ -141,8 +249,9 @@ class TwoGisRouting:
                 except httpx.HTTPStatusError as e:
                     raise RoutingError(f"2GIS {r.status_code}: {e}") from e
                 data = r.json()
-                if not isinstance(data, dict):
-                    raise RoutingError("2GIS вернул не JSON-объект")
+                # walk отдаёт объект {"result": [...]}, метро — список [...] top-level
+                if not isinstance(data, (dict, list)):
+                    raise RoutingError("2GIS вернул не JSON")
                 return data
             except (httpx.TransportError, httpx.TimeoutException) as e:
                 last = e
