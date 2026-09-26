@@ -213,15 +213,32 @@ def cache_key(fr: tuple[float, float], to: tuple[float, float], kind: str) -> tu
 
 
 class TwoGisRouting:
-    """Клиент 2GIS с retry и TTL-кэшем. use_cache=False — свежий запрос (избранное)."""
+    """Клиент 2GIS с retry и TTL-кэшем. use_cache=False — свежий запрос (избранное).
+
+    Лимиты: на демо-периоде 50 RPS. Наш флоу — 1–3 последовательных POST на
+    расчёт, но при всплеске параллельных пользователей держим клиентский
+    guard min_interval (по умолчанию 0.05 с -> не более ~20 RPS на инстанс),
+    плюс retry 429/5xx с backoff в _post."""
 
     def __init__(self, api_key: str = "", http: httpx.AsyncClient | None = None,
-                 walk_ttl_s: int = WALK_TTL_S, metro_ttl_s: int = METRO_TTL_S):
+                 walk_ttl_s: int = WALK_TTL_S, metro_ttl_s: int = METRO_TTL_S,
+                 min_interval_s: float = 0.05):
         self.key = api_key or os.environ.get("GIS_API_KEY", "")
         self._http = http or httpx.AsyncClient(timeout=15.0)
         self._cache: dict[tuple, tuple[float, list[RouteOption]]] = {}
         self.walk_ttl = walk_ttl_s
         self.metro_ttl = metro_ttl_s
+        self._rl_lock = asyncio.Lock()
+        self._rl_last = 0.0
+        self._rl_min_interval = min_interval_s
+
+    async def _rate_limit(self) -> None:
+        async with self._rl_lock:
+            now = time.monotonic()
+            wait = self._rl_min_interval - (now - self._rl_last)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._rl_last = time.monotonic()
 
     def drop(self) -> None:
         self._cache.clear()
@@ -239,6 +256,7 @@ class TwoGisRouting:
         last: Exception | None = None
         for attempt in (0, 1, 2):  # retry сетевых + 429/5xx с backoff
             try:
+                await self._rate_limit()
                 r = await self._http.post(url, params=params, json=body)
                 if r.status_code == 429 or 500 <= r.status_code < 600:
                     last = RoutingError(f"2GIS {r.status_code}, retry")

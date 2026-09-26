@@ -183,6 +183,24 @@ def test_module_functions_share_client(monkeypatch):
     assert len(calls) == 1
 
 
+def test_rate_limit_caps_burst(monkeypatch):
+    import time as _t
+    monkeypatch.setattr(R, "parse_walk_payload",
+                        lambda p: [RouteOption(mode="walk", duration_s=1, summary="s")])
+    r = ok_client(lambda req: payload_ok())
+    r.walk_ttl = 0  # каждый раз в сеть, чтобы мерить guard, а не кэш
+
+    async def burst():
+        await asyncio.gather(*[r.walking((55.0 + i * 0.001, 37.0), (55.1, 37.1))
+                               for i in range(4)])
+
+    t0 = _t.monotonic()
+    run(burst())
+    dt = _t.monotonic() - t0
+    # 4 запроса с интервалом ≥0.05с -> не быстрее ~0.15с (далеко от 50 RPS)
+    assert dt >= 0.15
+
+
 def test_metro_empty_means_no_metro(monkeypatch):
     monkeypatch.setattr(R, "parse_metro_payload", lambda p: [])
     r = ok_client(lambda req: payload_ok())
