@@ -34,6 +34,7 @@ from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMO
                      ask_morning_lead, ask_new_address, ask_new_group, ask_note_date,
                      ask_note_text, ask_notify, ask_route_mode, ask_transport, buffer_buttons,
                      cancel_buttons,                      evening_buttons, lang_buttons, leave_error_text,
+                     ios_key_buttons, ios_key_text,
                      main_menu_text, menu_kb, menu_match, mode_buttons, morning_lead_buttons,
                      need_group_first, need_home, norm_lang, no_metro_fallback,
                      note_card, note_confirm_delete, note_date_buttons, note_deleted, note_item_buttons,
@@ -858,6 +859,16 @@ async def main() -> None:
             store.save_user(u)
             await edit_settings()  # re-rendered in the NEW language
             return
+        if data in ("set:ioskey", "set:ioskey_reissue"):
+            # Токен показываем только здесь, в личке; в логи он не попадает
+            # (sendlog пишет длины сообщений, не текст).
+            u = fresh()
+            token = store.issue_api_token(uid) if data == "set:ioskey_reissue" \
+                else (store.get_api_token(uid) or store.issue_api_token(uid))
+            base = settings.public_base_url
+            link = f"{base}/api/v1/today?token={token}" if base else None
+            await safe_edit(ios_key_text(u.lang, link), ios_key_buttons(u.lang))
+            return
 
         # --- notes ---
         if data in ("note:menu",):
@@ -1056,9 +1067,13 @@ async def main() -> None:
                             fav_list_buttons(store.list_favorites(uid), u.lang))
             return
 
-    # Health-порт для Render Free: работает параллельно с polling.
+    # Health-порт для Render Free + iOS API: работает параллельно с polling.
     # aiogram start_polling сам ловит SIGINT/SIGTERM -> выходим в finally и всё закрываем.
-    health_runner = await start_health_server()
+    from .api import ApiCtx
+
+    api_ctx = ApiCtx(settings=settings, store=store, schedule_client=sched_client,
+                     buildings=buildings, geocoder=geocoder, routing=routing)
+    health_runner = await start_health_server(ctx=api_ctx)
     sched_task = asyncio.create_task(scheduler_loop(bot, settings, store, deps, last_calc))
     try:
         await dp.start_polling(bot)

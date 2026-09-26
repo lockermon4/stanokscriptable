@@ -173,10 +173,12 @@ def settings_buttons(lang: str):
         return ikb([[("Change group", "set:group"), ("Change address", "set:address")],
                     [("Transport", "set:transport"), ("Time buffer", "set:buffer")],
                     [("Notifications", "set:notify"), ("Language", "set:lang")],
+                    [("🔗 iOS key", "set:ioskey")],
                     [("◀️ Back", "set:back")]])
     return ikb([[("Изменить группу", "set:group"), ("Изменить адрес", "set:address")],
                 [("Способ передвижения", "set:transport"), ("Запас времени", "set:buffer")],
                 [("Время уведомлений", "set:notify"), ("Язык", "set:lang")],
+                [("🔗 Ключ для iOS", "set:ioskey")],
                 [("◀️ Назад", "set:back")]])
 
 
@@ -512,3 +514,30 @@ def fav_confirm_delete(lang: str, name: str, fav_id: int):
 
 def fav_deleted(lang: str, name: str) -> str:
     return f'🗑 Deleted "{name}".' if lang == EN else f'🗑 «{name}» удалён.'
+
+
+def ios_key_text(lang: str, link: str | None) -> str:
+    """Текст с готовой ссылкой для Scriptable."""
+    if lang == EN:
+        body = ("🔗 iOS key for local notifications (Scriptable).\n\n"
+                "Paste this link into your Scriptable script:\n")
+        tail = ("\nAnyone with this link reads your timetable — "
+                "reissue it below if compromised.")
+    else:
+        body = ("🔗 Ключ для локальных уведомлений iOS (Scriptable).\n\n"
+                "Вставь эту ссылку в Scriptable-скрипт:\n")
+        tail = ("\nУ кого есть ссылка — тот видит твоё расписание. "
+                "Если скомпрометирован — перевыпусти ниже.")
+    if not link:
+        no = "Domain not set (PUBLIC_BASE_URL)." if lang == EN else \
+            "Домен не настроен (PUBLIC_BASE_URL)."
+        return body + no + tail
+    return body + link + tail
+
+
+def ios_key_buttons(lang: str):
+    if lang == EN:
+        return ikb([[("🔄 Reissue key", "set:ioskey_reissue")],
+                    [("◀️ Settings", "set:menu")]])
+    return ikb([[("🔄 Перевыпустить ключ", "set:ioskey_reissue")],
+                [("◀️ Настройки", "set:menu")]])

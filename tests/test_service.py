@@ -15,7 +15,7 @@ class FakeSched:
     def __init__(self, payload):
         self.payload = payload
 
-    async def get_day_raw(self, group, day_iso):
+    async def get_day_raw(self, group, day_iso, fresh=False):
         if isinstance(self.payload, Exception):
             raise self.payload
         return self.payload

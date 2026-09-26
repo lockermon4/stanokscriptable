@@ -190,7 +190,7 @@ def test_schedule_day_cache_serves_repeats():
 # ---------- gather: падение расписания отменяет геокод ----------
 
 class FailSchedule:
-    async def get_day_raw(self, group, day_iso):
+    async def get_day_raw(self, group, day_iso, fresh=False):
         raise RuntimeError("api down")
 
 

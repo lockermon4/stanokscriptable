@@ -100,15 +100,18 @@ class ScheduleClient:
             return cached
         raise ScheduleApiError("GET groups failed: " + "; ".join(errors))
 
-    async def get_day_raw(self, group: str, day_iso: str) -> object:
-        """One day as a range query startDate=endDate=day_iso (stankinapp has no single-day endpoint)."""
-        return await self.get_range_raw(group, day_iso, day_iso)
+    async def get_day_raw(self, group: str, day_iso: str, fresh: bool = False) -> object:
+        """One day as a range query startDate=endDate=day_iso (stankinapp has no single-day endpoint).
+        fresh=True: мимо in-memory кэша (iOS API перечитывает перед отдачей)."""
+        return await self.get_range_raw(group, day_iso, day_iso, fresh=fresh)
 
-    async def get_range_raw(self, group: str, start_iso: str, end_iso: str) -> object:
+    async def get_range_raw(self, group: str, start_iso: str, end_iso: str,
+                            fresh: bool = False) -> object:
         key = (group, start_iso, end_iso)
-        hit = self._day.get(key)
-        if hit and time.monotonic() - hit[0] < self._day_ttl:
-            return hit[1]
+        if not fresh:
+            hit = self._day.get(key)
+            if hit and time.monotonic() - hit[0] < self._day_ttl:
+                return hit[1]
         try:
             r = await _get_with_retry(
                 self._http,

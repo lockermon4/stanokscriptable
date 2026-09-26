@@ -94,6 +94,10 @@ class Store:
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
                 name TEXT, from_coords TEXT, to_coords TEXT, transport_type TEXT)"""
             )
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS api_tokens(
+                user_id INTEGER PRIMARY KEY, token TEXT, created_at TEXT)"""
+            )
 
     def _row_user(self, r) -> UserSettings:
         keys = set(r.keys())
@@ -194,3 +198,31 @@ class Store:
         with self._conn() as c:
             cur = c.execute("DELETE FROM favorites WHERE user_id=? AND id=?", (user_id, fav_id))
             return (cur.rowcount or 0) > 0
+
+    # api_tokens: один токен на пользователя для iOS HTTP API (Scriptable).
+    # Токен в логи не пишем (см. sendlog: логируются только длины).
+    def get_api_token(self, user_id: int) -> str:
+        """Существующий токен или "" (не создаёт молча — генерация явная)."""
+        with self._conn() as c:
+            r = c.execute("SELECT token FROM api_tokens WHERE user_id=?", (user_id,)).fetchone()
+        return r["token"] if r and r["token"] else ""
+
+    def issue_api_token(self, user_id: int) -> str:
+        """Создать (или ПЕРЕВЫПУСТИТЬ — старый сразу невалиден)."""
+        import secrets
+        from datetime import datetime, timezone
+
+        token = secrets.token_urlsafe(32)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn() as c:
+            c.execute("INSERT INTO api_tokens(user_id,token,created_at) VALUES(?,?,?)"
+                      " ON CONFLICT(user_id) DO UPDATE SET token=excluded.token,"
+                      " created_at=excluded.created_at", (user_id, token, now))
+        return token
+
+    def user_id_by_token(self, token: str) -> int | None:
+        if not token:
+            return None
+        with self._conn() as c:
+            r = c.execute("SELECT user_id FROM api_tokens WHERE token=?", (token,)).fetchone()
+        return int(r["user_id"]) if r else None

@@ -117,13 +117,14 @@ async def build_day_view(
     routing=None,  # TwoGisRouting-like (walking()/metro()); default — модуль routing.py
     home_coords: tuple[float, float] | None = None,  # (lat, lon) from location pin
     use_cache: bool = True,
+    fresh: bool = False,  # True: расписание мимо дневного кэша (iOS API перечитывает)
 ) -> DayView:
     tz = ZoneInfo(settings.institution_tz)
     day_iso = day.strftime(settings.schedule_date_format)
     # Schedule JSON and home geocode are independent -> run in parallel.
     # If the schedule fails we cancel the stray geocode (no wasted work,
     # no extra latency on the schedule_failed path).
-    sched_task = asyncio.ensure_future(schedule_client.get_day_raw(group, day_iso))
+    sched_task = asyncio.ensure_future(schedule_client.get_day_raw(group, day_iso, fresh=fresh))
     geo_task = None
     if home_coords is None and home_address.strip():
         geo_task = asyncio.ensure_future(geocoder.geocode(home_address))
