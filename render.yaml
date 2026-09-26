@@ -27,5 +27,37 @@ services:
         value: https://nominatim.openstreetmap.org
       - key: DATABASE_PATH
         value: bot_data.sqlite3
+      - key: SCHEDULE_GROUPS_PATH
+        value: /api/groups
+      - key: SCHEDULE_PATH
+        value: /api/schedule
+      - key: SCHEDULE_GROUP_PARAM
+        value: groupName
+      - key: SCHEDULE_START_PARAM
+        value: startDate
+      - key: SCHEDULE_END_PARAM
+        value: endDate
+      - key: SCHEDULE_DATE_FORMAT
+        value: "%Y-%m-%d"
+      - key: SCHEDULE_DAY_TTL_S
+        value: 900
+      - key: GROUPS_JSON_URL
+        sync: false # опционально: зеркало списка групп
+      - key: GROUPS_CACHE_FILE
+        value: data/groups_cache.json
+      - key: GROUPS_CACHE_TTL_H
+        value: 168
+      - key: NOMINATIM_USER_AGENT
+        value: "student-schedule-bot/0.1 (contact: you@example.com)"
+      - key: BUILDINGS_FILE
+        value: buildings.yaml
+      - key: METRO_DATA_FILE
+        value: data/metro_moscow.json
+      - key: DEFAULT_BUFFER_MIN
+        value: 10
+      - key: DEFAULT_EVENING_TIME
+        value: "21:00"
+      - key: DEFAULT_MORNING_MIN_BEFORE_EXIT
+        value: 60
 # Остальные переменные (.env.example) опциональны — дефолты в student_bot/config.py.
 # PORT выставляет сам Render, задавать не нужно.

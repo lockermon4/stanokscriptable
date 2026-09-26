@@ -16,6 +16,24 @@ def _get(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+# BOT_TOKEN — без него polling невозможен в принципе.
+# PUBLIC_BASE_URL — без него ссылка «🔗 Ключ для iOS» соберётся битой
+# (заглушка вместо домена), поэтому тоже фатальный.
+# GIS_API_KEY — только предупреждение: без ключа дорога честно отдаёт
+# route_failed, остальное (расписание, заметки, уведомления) работает.
+REQUIRED_ENV_VARS = ("BOT_TOKEN", "PUBLIC_BASE_URL")
+RECOMMENDED_ENV_VARS = ("GIS_API_KEY",)
+
+
+def missing_env_vars() -> tuple[list[str], list[str]]:
+    """(отсутствующие обязательные, отсутствующие рекомендуемые).
+    Читает os.environ (туда уже подмешан .env через load_dotenv выше) —
+    чистáя функция, тестируется без бота."""
+    missing = [v for v in REQUIRED_ENV_VARS if not os.environ.get(v, "").strip()]
+    recommended = [v for v in RECOMMENDED_ENV_VARS if not os.environ.get(v, "").strip()]
+    return missing, recommended
+
+
 @dataclass(frozen=True)
 class Settings:
     bot_token: str = ""
