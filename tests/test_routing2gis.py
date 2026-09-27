@@ -287,3 +287,48 @@ def test_norm_transport_and_menu_routes():
     assert "пар больше нет" in leave_error_text("ru", "no_lessons")
     assert "корпуса неизвестен" in leave_error_text("ru", "unknown_building")
     assert "Когда выходить" in route_session_expired("ru")
+
+
+def _metro_item(wait_s):
+    return {"id": "1", "total_duration": 2464, "total_distance": 8939,
+            "total_walkway_distance": "пешком 20 мин", "transfer_count": 1,
+            "pedestrian": False, "transport_types": ["metro"],
+            "movements": [
+                {"type": "walkway", "moving_duration": 300,
+                 "waypoint": {"comment": "пешком 400 м"}},
+                {"type": "passage", "moving_duration": 412,
+                 "waiting_duration": wait_s,
+                 "metro": {"line_name": "Л1"},
+                 "waypoint": {"name": "Ст"}}]}
+
+
+def test_insane_waiting_filtered_out():
+    from student_bot.routing import MAX_WAIT_S, parse_metro_payload
+    assert MAX_WAIT_S == 1800
+    # Живой кейс 2026-09-28: waiting 15708с посреди дня — мусор, не расписание.
+    assert parse_metro_payload([_metro_item(15708)]) == []
+    ok = parse_metro_payload([_metro_item(15708), _metro_item(120)])
+    assert len(ok) == 1 and ok[0].duration_s == 2464
+    assert parse_metro_payload([_metro_item(1800)]) != []  # граница: 30 мин ещё ок
+
+
+def test_day_exit_line_shows_metro_fallback():
+    from types import SimpleNamespace
+    from student_bot.bot import day_exit_line
+    from student_bot.exit_time import ExitPlan
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from student_bot.models import Lesson
+    tz = ZoneInfo("Europe/Moscow")
+    les = Lesson(group="G", day=datetime(2026, 9, 29).date(),
+                 starts_at=datetime(2026, 9, 29, 10, 15, tzinfo=tz),
+                 ends_at=datetime(2026, 9, 29, 11, 50, tzinfo=tz),
+                 subject="М", room="0209")
+    plan = ExitPlan(lesson=les, travel_seconds=270 * 60, buffer_min=10,
+                    exit_at=datetime(2026, 9, 29, 5, 35, tzinfo=tz),
+                    is_approximate=False, route_calculated_at=None, already_passed=False)
+    view = SimpleNamespace(plan=plan, target=les, metro_fallback=True)
+    txt = day_exit_line(view, "ru")
+    assert "05:35" in txt and "Маршрута на метро нет" in txt
+    view2 = SimpleNamespace(plan=plan, target=les, metro_fallback=False)
+    assert "Маршрута на метро нет" not in day_exit_line(view2, "ru")

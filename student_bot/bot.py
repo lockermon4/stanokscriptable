@@ -138,6 +138,10 @@ def day_exit_line(view, lang: str = "ru") -> str:
         f"🏃 Выйти в {p.exit_at.strftime('%H:%M')} (~{format_duration(p.travel_seconds)} в пути)"
     if p.already_passed:
         s += ". ⚠️ Already past — leave now!" if en else ". ⚠️ Время уже прошло — выходите сейчас!"
+    if getattr(view, "metro_fallback", False):
+        # Метро отвалилось/соврало — время посчитано пешком. Молчать об этом
+        # нельзя: иначе "выйти в 04:42" выглядит как баг бота, а не данных.
+        s += "\n" + no_metro_fallback(lang)
     return s
 
 

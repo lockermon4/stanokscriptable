@@ -14,6 +14,7 @@ WALK_FIELDS / METRO_FIELDS — названия полей оттуда, не в
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -21,11 +22,19 @@ from typing import Any
 
 import httpx
 
+log = logging.getLogger("bot.routing")
+
 WALK_URL = "https://routing.api.2gis.com/routing/7.0.0/global"
 METRO_URL = "https://routing.api.2gis.com/public_transport/2.0"
 
 WALK_TTL_S = 3600
 METRO_TTL_S = 900
+
+# Санити-порог ожидания посадки: дневной интервал метро Москвы — минуты,
+# вечером до ~10 мин. Больше 30 мин на одной посадке — битые данные API
+# (живьём 2026-09-26: waiting_duration=15708с = 4.3ч посреди дня).
+# Такие варианты отбрасываем, а не суммируем в "выйти в 04:42".
+MAX_WAIT_S = 1800
 
 
 class RoutingError(RuntimeError):
@@ -177,11 +186,25 @@ def parse_metro_payload(payload: Any) -> list[RouteOption]:
 
     Эндпоинт может вернуть пешеходный вариант (pedestrian: true) или пустоту —
     такие отсеиваем; если метро-вариантов не осталось — пустой список
-    (вызывающий код кидает NoMetroError)."""
+    (вызывающий код кидает NoMetroError).
+
+    Отдельно отбрасываем варианты с безумным ожиданием посадки
+    (waiting_duration > MAX_WAIT_S): это битые данные API, а не реальное
+    расписание — их суммирование давало "выйти в 04:42"."""
+
+    def _wait_ok(movements: list) -> bool:
+        for m in movements:
+            if isinstance(m, dict) and m.get("type") == "passage":
+                w = _num(m.get("waiting_duration")) or 0
+                if w > MAX_WAIT_S:
+                    return False
+        return True
+
     items = payload if isinstance(payload, list) else (payload.get("result") or [])
     if not isinstance(items, list):
         return []
     options: list[RouteOption] = []
+    dropped_wait = 0
     for it in items:
         if not isinstance(it, dict):
             continue
@@ -194,6 +217,9 @@ def parse_metro_payload(payload: Any) -> list[RouteOption]:
         if dur is None:
             continue
         movements = it.get("movements") or []
+        if not _wait_ok(movements):
+            dropped_wait += 1
+            continue
         before, after = _metro_walk_ends(movements)
         transfers = int(_num(it.get("transfer_count")) or 0)
         dist = int(_num(it.get("total_distance")) or 0)
@@ -205,6 +231,9 @@ def parse_metro_payload(payload: Any) -> list[RouteOption]:
                                    transfers=transfers, walk_before_s=before,
                                    walk_after_s=after, summary=summary,
                                    steps=_metro_steps(movements), raw=it))
+    if dropped_wait:
+        log.warning("2GIS metro: отброшено %d вариантов с ожиданием > %dс",
+                    dropped_wait, MAX_WAIT_S)
     return options
 
 
