@@ -444,8 +444,51 @@ def route_details(lang: str, opt, exit_line: str = "") -> str:
 
 def route_details_buttons(idx: int, lang: str):
     if lang == EN:
-        return ikb([[("⭐ Save", f"rt:save:{idx}")], [("◀️ Back", "rt:cancel")]])
-    return ikb([[("⭐ Сохранить", f"rt:save:{idx}")], [("◀️ Назад", "rt:cancel")]])
+        return ikb([[("🏃 Leave now", "rt:now")],
+                    [("⭐ Save", f"rt:save:{idx}")], [("◀️ Back", "rt:cancel")]])
+    return ikb([[("🏃 Выйти сейчас", "rt:now")],
+                [("⭐ Сохранить", f"rt:save:{idx}")], [("◀️ Назад", "rt:cancel")]])
+
+
+def leave_now_buttons(lang: str):
+    if lang == EN:
+        return ikb([[("🏃 Leave now", "rt:now")]])
+    return ikb([[("🏃 Выйти сейчас", "rt:now")]])
+
+
+def metro_closed(lang: str) -> str:
+    if lang == EN:
+        return "🚇 Metro is closed (01:00–05:30), opens at 05:30."
+    return "🚇 Метро закрыто (01:00–05:30), откроется в 05:30."
+
+
+def metro_gray(lang: str) -> str:
+    if lang == EN:
+        return "⚠️ Last trains: metro runs until 01:00 — double-check your timing."
+    return "⚠️ Последние поезда: метро работает до 01:00 — проверь время."
+
+
+def leave_now_line(lang: str, icon: str, arrival, lesson) -> str:
+    """Строка 'приедешь в HH:MM — вердикт' для кнопки 'Выйти сейчас' (чистая)."""
+    from datetime import timedelta
+
+    if arrival is None:
+        return f"{icon} — не посчиталось, попробуй позже." if lang != EN else \
+            f"{icon} — couldn't calculate, try later."
+    arr = arrival.strftime("%H:%M")
+    start = lesson.starts_at
+    end = lesson.ends_at or (lesson.starts_at + timedelta(minutes=90))
+    if arrival <= start:
+        v = "успеваешь" if lang != EN else "you'll make it"
+    elif arrival < end:
+        late = int((arrival - start).total_seconds() // 60)
+        left = int((end - arrival).total_seconds() // 60)
+        v = f"опоздаешь на ~{late} мин, останется ~{left} мин" if lang != EN else \
+            f"~{late} min late, ~{left} min left"
+    else:
+        v = "не успеешь — кончится раньше" if lang != EN else "won't make it"
+    return f"{icon} приедешь в {arr} — {v}" if lang != EN else \
+        f"{icon} arrival at {arr} — {v}"
 
 
 def route_saved(lang: str, name: str) -> str:

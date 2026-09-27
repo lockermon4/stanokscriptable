@@ -332,3 +332,43 @@ def test_day_exit_line_shows_metro_fallback():
     assert "05:35" in txt and "Маршрута на метро нет" in txt
     view2 = SimpleNamespace(plan=plan, target=les, metro_fallback=False)
     assert "Маршрута на метро нет" not in day_exit_line(view2, "ru")
+
+
+def test_metro_hours_states():
+    from datetime import datetime
+    from student_bot.metro_hours import metro_state, opens_at_text
+    assert opens_at_text() == "05:30"
+    t = lambda h, m: metro_state(datetime(2026, 9, 26, h, m))
+    assert t(0, 29) == "open" and t(12, 0) == "open" and t(23, 0) == "open"
+    assert t(0, 30) == "gray" and t(0, 59) == "gray"
+    assert t(1, 0) == "closed" and t(3, 0) == "closed" and t(5, 29) == "closed"
+    assert t(5, 30) == "open"
+
+
+def test_metro_closed_gray_texts_and_button():
+    from student_bot.texts import (leave_now_buttons, metro_closed, metro_gray,
+                                   route_details_buttons)
+    assert "05:30" in metro_closed("ru") and "закрыто" in metro_closed("ru")
+    assert "01:00" in metro_gray("ru")
+    assert "closed" in metro_closed("en")
+    datas = [b.callback_data for row in route_details_buttons(0, "ru").inline_keyboard for b in row]
+    assert "rt:now" in datas
+    texts = [b.text for row in leave_now_buttons("ru").inline_keyboard for b in row]
+    assert "🏃 Выйти сейчас" in texts
+
+
+def test_leave_now_line_verdicts():
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from student_bot.models import Lesson
+    from student_bot.texts import leave_now_line
+    tz = ZoneInfo("Europe/Moscow")
+    les = Lesson(group="G", day=datetime(2026, 9, 26).date(),
+                 starts_at=datetime(2026, 9, 26, 8, 30, tzinfo=tz),
+                 ends_at=datetime(2026, 9, 26, 10, 5, tzinfo=tz),
+                 subject="М", room="0303")
+    assert "успеваешь" in leave_now_line("ru", "🚶", datetime(2026, 9, 26, 8, 0, tzinfo=tz), les)
+    late = leave_now_line("ru", "🚇", datetime(2026, 9, 26, 8, 50, tzinfo=tz), les)
+    assert "опоздаешь на ~20 мин" in late and "останется ~75 мин" in late
+    assert "не успеешь" in leave_now_line("ru", "🚶", datetime(2026, 9, 26, 10, 30, tzinfo=tz), les)
+    assert "не посчиталось" in leave_now_line("ru", "🚶", None, les)

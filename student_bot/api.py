@@ -29,6 +29,7 @@ from aiohttp import web
 from .cards import (PushMsg, build_evening, build_morning,
                     format_push_evening, format_push_morning, with_metro)
 from .exit_time import format_duration
+from .metro_hours import metro_state, opens_at_text
 from .service import DayView, build_day_view
 from .store import Store, UserSettings
 
@@ -47,6 +48,11 @@ class ApiCtx:
 
 def _now(ctx: ApiCtx, now: datetime | None = None) -> datetime:
     return now if now is not None else datetime.now(ZoneInfo(ctx.settings.institution_tz))
+
+
+def metro_open_info(now: datetime) -> dict:
+    """Состояние метро для Scriptable: open|gray|closed + во сколько откроется."""
+    return {"state": metro_state(now), "opens_at": opens_at_text()}
 
 
 def _home_coords(u: UserSettings) -> tuple[float, float] | None:
@@ -266,6 +272,7 @@ async def today_payload(ctx: ApiCtx, u: UserSettings, now: datetime | None = Non
     nxt = await suggest_next(ctx, u, view, now)
     return {"status": "ok", "kind": "today", "date": day.isoformat(), "group": u.group,
             "lessons": lessons, "focus": focus, "suggest_next": nxt, "note": note,
+            "metro_open": metro_open_info(now),
             "push": _push_json(format_push_morning(d, "a", lang))}
 
 
@@ -331,6 +338,7 @@ async def exit_time_payload(ctx: ApiCtx, u: UserSettings, now: datetime | None =
     nxt = await suggest_next(ctx, u, view, now)
     base = {"status": "ok", "kind": "exit-time", "at": now.strftime("%H:%M"),
             "date": day.isoformat(), "focus": focus, "suggest_next": nxt,
+            "metro_open": metro_open_info(now),
             "push": _push_json(format_push_morning(d, "a", lang))}
     if focus and focus["exit"]:
         base.update({"exit": focus["exit"], "travel_s": focus["travel_s"],

@@ -6,6 +6,7 @@ import os
 import re
 import time
 from datetime import date, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F
@@ -21,6 +22,7 @@ from .cards import (build_evening, build_morning, evening_failed, format_day_lis
 from .config import Settings
 from .exit_time import compute_exit, first_relevant_lesson, format_duration
 from .geocode import NominatimGeocoder
+from .metro_hours import metro_state
 from .normalize import normalize_day, normalize_groups
 from .notifications import morning_notify_time, parse_hhmm
 from .routing import NoMetroError, RoutingError, TwoGisRouting
@@ -34,8 +36,9 @@ from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMO
                      ask_morning_lead, ask_new_address, ask_new_group, ask_note_date,
                      ask_note_text, ask_notify, ask_route_mode, ask_transport, buffer_buttons,
                      cancel_buttons,                      evening_buttons, lang_buttons, leave_error_text,
-                     ios_key_buttons, ios_key_text,
+                     ios_key_buttons, ios_key_text, leave_now_buttons, leave_now_line,
                      main_menu_text, menu_kb, menu_match, mode_buttons, morning_lead_buttons,
+                     metro_closed, metro_gray,
                      need_group_first, need_home, norm_lang, no_metro_fallback,
                      note_card, note_confirm_delete, note_date_buttons, note_deleted, note_item_buttons,
                      note_saved, notes_menu_buttons, notes_menu_text, notify_menu_buttons,
@@ -185,8 +188,12 @@ async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict,
             for u in store.all_users():
                 if not u.group or (not u.home_address and home_coords_of(u) is None):
                     continue
+                # Ночью (01:00–05:30) метро закрыто: 2GIS не дёргаем, считаем
+                # пешком и честно пишем об этом в утреннем сообщении.
+                night_metro = u.transport == "metro" and metro_state(now) == "closed"
                 kw = dict(group=u.group, home_address=u.home_address,
-                          home_coords=home_coords_of(u), transport=u.transport,
+                          home_coords=home_coords_of(u),
+                          transport=("walk" if night_metro else u.transport),
                           buffer_min=u.buffer_min, settings=settings, **deps)
                 # --- evening ---
                 try:
@@ -229,8 +236,10 @@ async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict,
                 # fresh recalc right before sending: never after exit
                 if notify_at <= now < view.plan.exit_at and (now - notify_at) < timedelta(minutes=2):
                     note = store.get_note(u.user_id, today.isoformat())
-                    await bot.send_message(
-                        u.user_id, format_telegram_morning(morning_card(view, note), u.lang))
+                    text = format_telegram_morning(morning_card(view, note), u.lang)
+                    if night_metro:
+                        text += "\n" + metro_closed(u.lang)
+                    await bot.send_message(u.user_id, text)
                     store.mark_sent(u.user_id, today.isoformat(), "morn")
         except Exception:
             pass  # never crash loop; errors surface in day views
@@ -457,9 +466,34 @@ async def main() -> None:
                         route_ok = view.plan is not None
                         focus_text = build_focus(lesson, next_lesson, travel_s,
                                                  u.buffer_min, now, route_ok, lang)
+                        if view.metro_fallback and norm_transport(u.transport) == "metro":
+                            # Время посчитано пешком вместо метро: ночью — потому что
+                            # закрыто, днём — потому что 2GIS соврал. Молчать нельзя.
+                            if metro_state(now) == "closed":
+                                focus_text += "\n" + metro_closed(lang)
+                            else:
+                                focus_text += "\n" + no_metro_fallback(lang)
                         day_list = format_day_list(view.schedule, now, lang)
                         tail = f"\n🎒 {note}" if note else ""
-                        await m.answer(f"{focus_text}\n\n{day_list}{tail}", reply_markup=kb)
+                        # Сессия для кнопки "Выйти сейчас" (свежее прибытие).
+                        markup: Any = kb
+                        from_xy = await home_xy(u)
+                        if from_xy is not None:
+                            tgt = await lesson_target(
+                                settings=settings, schedule_client=deps["schedule_client"],
+                                buildings=deps["buildings"], group=u.group, day=day,
+                                now=now, for_today=True)
+                            if not isinstance(tgt, LessonTargetError):
+                                lesson_line = (f"{tgt.lesson.starts_at.strftime('%H:%M')} — "
+                                               f"{tgt.lesson.subject}, {tgt.label}")
+                                route_sessions[m.from_user.id] = {
+                                    "from": from_xy, "to": (tgt.lat, tgt.lon),
+                                    "label": tgt.label, "lesson_line": lesson_line,
+                                    "lesson": tgt.lesson, "buffer": u.buffer_min,
+                                    "mode": norm_transport(u.transport),
+                                    "options": [], "fallback": False}
+                                markup = leave_now_buttons(lang)
+                        await m.answer(f"{focus_text}\n\n{day_list}{tail}", reply_markup=markup)
                 else:
                     label = ("Today" if action == "today" else "Tomorrow") if lang == "en" else \
                         ("Сегодня" if action == "today" else "Завтра")
@@ -952,11 +986,15 @@ async def main() -> None:
 
         # --- маршруты 2GIS: тип -> варианты -> детали + сохранить; избранное ---
         async def show_options(sess: dict, use_cache: bool) -> None:
-            """Запросить варианты по sess[from/to/mode], показать кнопками."""
+            """Запросить варианты по sess[from/to/mode], показать кнопками.
+            Ночью (01:00–05:30) метро не дёргаем вовсе: сразу 'закрыто' + пешком.
+            В серой зоне (00:30–01:00) считаем метро, но с предупреждением."""
             u = fresh()
             mode = sess.get("mode", "walk")
+            state = metro_state(datetime.now(ZoneInfo(settings.institution_tz)))
+            sess["closed"] = state == "closed" and mode == "metro"
             try:
-                if mode == "metro":
+                if mode == "metro" and state != "closed":
                     try:
                         options = await routing.metro(sess["from"], sess["to"],
                                                       use_cache=use_cache)
@@ -978,8 +1016,12 @@ async def main() -> None:
                 return
             sess["options"] = options
             txt = variants_text(u.lang, sess["lesson_line"], options)
-            if sess.get("fallback"):
+            if sess.get("closed"):
+                txt = metro_closed(u.lang) + "\n\n" + txt
+            elif sess.get("fallback"):
                 txt = no_metro_fallback(u.lang) + "\n\n" + txt
+            elif state == "gray" and mode == "metro":
+                txt = metro_gray(u.lang) + "\n\n" + txt
             await safe_edit(txt, variants_buttons(options, u.lang))
 
         if data in ("rtm:walk", "rtm:metro"):
@@ -1007,6 +1049,49 @@ async def main() -> None:
                                           sess.get("buffer", 10), u.lang)
             await safe_edit(route_details(u.lang, opt, exit_line),
                             route_details_buttons(i, u.lang))
+            return
+        if data == "rt:now":
+            # "Выйти сейчас": свежее прибытие пешком и (если открыто) метро.
+            sess = route_sessions.get(uid)
+            if not sess:
+                await safe_edit(route_session_expired(fresh().lang))
+                return
+            u = fresh()
+            en = u.lang == "en"
+            tz = ZoneInfo(settings.institution_tz)
+            now = datetime.now(tz)
+            state = metro_state(now)
+            fr, to = sess["from"], sess["to"]
+            lesson = sess.get("lesson")
+            lines = [sess.get("lesson_line") or ("🏃 Leaving now" if en else "🏃 Выйти сейчас")]
+            try:
+                w = await routing.walking(fr, to, use_cache=False)
+                w_arr = now + timedelta(seconds=w[0].duration_s) if w else None
+            except RoutingError:
+                w_arr = None
+            if lesson is not None:
+                lines.append(leave_now_line(u.lang, "🚶", w_arr, lesson))
+            else:
+                lines.append(f"🚶 arrival at {w_arr:%H:%M}." if (en and w_arr) else
+                             (f"🚶 приедешь в {w_arr:%H:%M}." if w_arr else
+                              ("🚶 — couldn't calculate." if en else "🚶 — не посчиталось.")))
+            if state == "closed":
+                lines.append(metro_closed(u.lang))
+            else:
+                try:
+                    m = await routing.metro(fr, to, use_cache=False)
+                    m_arr = now + timedelta(seconds=m[0].duration_s) if m else None
+                except RoutingError:
+                    m_arr = None
+                if state == "gray":
+                    lines.append(metro_gray(u.lang))
+                if lesson is not None:
+                    lines.append(leave_now_line(u.lang, "🚇", m_arr, lesson))
+                else:
+                    lines.append(f"🚇 arrival at {m_arr:%H:%M}." if (en and m_arr) else
+                                 (f"🚇 приедешь в {m_arr:%H:%M}." if m_arr else
+                                  ("🚇 — couldn't calculate." if en else "🚇 — не посчиталось.")))
+            await safe_edit("\n".join(lines))
             return
         if data.startswith("rt:save:"):
             sess = route_sessions.get(uid)
