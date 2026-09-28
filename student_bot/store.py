@@ -166,6 +166,7 @@ class Store:
                 f"""CREATE TABLE IF NOT EXISTS api_tokens(
                 user_id {int_pk} PRIMARY KEY, token TEXT, created_at TEXT)"""
             )
+            self._init_schedule_tables(c)
 
     def _row_user(self, r) -> UserSettings:
         keys = set(r.keys())
@@ -301,3 +302,95 @@ class Store:
         with self._conn() as c:
             r = c.execute("SELECT user_id FROM api_tokens WHERE token=?", (token,)).fetchone()
         return int(r["user_id"]) if r else None
+
+    # schedule_snapshots: последний ПОДТВЕРЖДЁННЫЙ снимок пар (группа, дата).
+    # schedule_pending: неподтверждённый дифф (ждёт второго опроса подряд).
+    # schedule_changes: последний подтверждённый батч изменений (для iOS API).
+    # JSON-списки канонических уроков/изменений; TEXT работает на sqlite и PG.
+    def _init_schedule_tables(self, c) -> None:
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS schedule_snapshots(
+            group_name TEXT, day TEXT, lessons_json TEXT, fetched_at TEXT,
+            PRIMARY KEY(group_name, day))"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS schedule_pending(
+            group_name TEXT, day TEXT, changes_json TEXT, seen_at TEXT,
+            PRIMARY KEY(group_name, day))"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS schedule_changes(
+            group_name TEXT, day TEXT, changes_json TEXT, notified_at TEXT,
+            PRIMARY KEY(group_name, day))"""
+        )
+
+    @staticmethod
+    def _json_loads(raw: str | None) -> list | None:
+        if not raw:
+            return None
+        try:
+            import json
+
+            v = json.loads(raw)
+            return v if isinstance(v, list) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _json_dumps(items: list) -> str:
+        import json
+
+        return json.dumps(items, ensure_ascii=False)
+
+    def get_snapshot(self, group: str, day: str) -> list | None:
+        """None = снимка ещё нет (первый опрос сохраняем молча)."""
+        with self._conn() as c:
+            r = c.execute("SELECT lessons_json FROM schedule_snapshots WHERE group_name=? AND day=?",
+                          (group, day)).fetchone()
+        return self._json_loads(r["lessons_json"]) if r else None
+
+    def save_snapshot(self, group: str, day: str, lessons: list) -> None:
+        import datetime as _dt
+
+        now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        with self._conn() as c:
+            c.execute("INSERT INTO schedule_snapshots(group_name,day,lessons_json,fetched_at)"
+                      " VALUES(?,?,?,?) ON CONFLICT(group_name,day) DO UPDATE SET"
+                      " lessons_json=excluded.lessons_json, fetched_at=excluded.fetched_at",
+                      (group, day, self._json_dumps(lessons), now))
+
+    def get_pending(self, group: str, day: str) -> list | None:
+        with self._conn() as c:
+            r = c.execute("SELECT changes_json FROM schedule_pending WHERE group_name=? AND day=?",
+                          (group, day)).fetchone()
+        return self._json_loads(r["changes_json"]) if r else None
+
+    def save_pending(self, group: str, day: str, changes: list) -> None:
+        import datetime as _dt
+
+        now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        with self._conn() as c:
+            c.execute("INSERT INTO schedule_pending(group_name,day,changes_json,seen_at)"
+                      " VALUES(?,?,?,?) ON CONFLICT(group_name,day) DO UPDATE SET"
+                      " changes_json=excluded.changes_json, seen_at=excluded.seen_at",
+                      (group, day, self._json_dumps(changes), now))
+
+    def clear_pending(self, group: str, day: str) -> None:
+        with self._conn() as c:
+            c.execute("DELETE FROM schedule_pending WHERE group_name=? AND day=?", (group, day))
+
+    def save_changes(self, group: str, day: str, changes: list) -> None:
+        import datetime as _dt
+
+        now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        with self._conn() as c:
+            c.execute("INSERT INTO schedule_changes(group_name,day,changes_json,notified_at)"
+                      " VALUES(?,?,?,?) ON CONFLICT(group_name,day) DO UPDATE SET"
+                      " changes_json=excluded.changes_json, notified_at=excluded.notified_at",
+                      (group, day, self._json_dumps(changes), now))
+
+    def get_changes(self, group: str, day: str) -> list:
+        with self._conn() as c:
+            r = c.execute("SELECT changes_json FROM schedule_changes WHERE group_name=? AND day=?",
+                          (group, day)).fetchone()
+        return self._json_loads(r["changes_json"]) if r else []

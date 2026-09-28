@@ -680,3 +680,58 @@ def ios_key_buttons(lang: str):
                     [("◀️ Settings", "set:menu")]])
     return ikb([[("🔄 Перевыпустить ключ", "set:ioskey_reissue")],
                 [("◀️ Настройки", "set:menu")]])
+
+
+def schedule_change_text(lang: str, day_iso: str, changes: list) -> str:
+    """Короткое уведомление об изменениях (тип/время/предмет уже в change)."""
+    from datetime import date as _date
+
+    try:
+        label = _date.fromisoformat(day_iso).strftime("%d.%m")
+    except Exception:
+        label = day_iso
+    lines = []
+    for c in changes:
+        t, subj, detail = c.get("time", ""), c.get("subject", ""), c.get("detail", "")
+        typ = c.get("type", "")
+        if lang == EN:
+            head = {"removed": f"Class removed: {t} {subj}",
+                    "added": f"New class: {t} {subj}",
+                    "moved": f"Class moved: {subj}",
+                    "room": f"Room changed: {t} {subj}",
+                    "teacher": f"Teacher changed: {t} {subj}",
+                    "time": f"Time changed: {subj}"}.get(typ, f"Changed: {t} {subj}")
+        else:
+            head = {"removed": f"Убрали пару: {t} {subj}",
+                    "added": f"Добавили пару: {t} {subj}",
+                    "moved": f"Пара перенесена: {subj}",
+                    "room": f"Кабинет изменился: {t} {subj}",
+                    "teacher": f"Преподаватель изменился: {t} {subj}",
+                    "time": f"Время изменилось: {subj}"}.get(typ, f"Изменение: {t} {subj}")
+        lines.append(head + (f" — {detail}" if detail else ""))
+    title = f"⚠️ Schedule {label}:" if lang == EN else f"⚠️ Расписание {label}:"
+    return title + "\n" + "\n".join(lines)
+
+
+def morning_recalc_text(lang: str) -> str:
+    return "🔄 Exit time recalculated (first class changed):" if lang == EN else \
+        "🔄 Время выхода пересчитано (первая пара изменилась):"
+
+
+def weather_line(lang: str, temp_c: float, precip_prob: int, kind: str) -> str:
+    """Одна строка погоды: '🌧 +9°, дождь 70%: возьми зонт'."""
+    sign = "+" if temp_c >= 0 else ""
+    t = f"{sign}{int(round(temp_c))}°"
+    rain_word = {"rain": "дождь", "snow": "снег"}.get(kind, "осадки")
+    if lang == EN:
+        rain_word = {"rain": "rain", "snow": "snow"}.get(kind, "precipitation")
+        if precip_prob < 20:
+            return f"☀️ {t}, no precipitation"
+        icon = "🌧" if precip_prob >= 50 else "⛅"
+        tail = ": take an umbrella" if precip_prob >= 50 else ""
+        return f"{icon} {t}, {rain_word} {precip_prob}%{tail}"
+    if precip_prob < 20:
+        return f"☀️ {t}, без осадков"
+    icon = "🌧" if precip_prob >= 50 else "⛅"
+    tail = ": возьми зонт" if precip_prob >= 50 else ""
+    return f"{icon} {t}, {rain_word} {precip_prob}%{tail}"

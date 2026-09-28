@@ -33,6 +33,8 @@ from .metro_hours import OPEN_H, OPEN_M, metro_state, opens_at_text
 from .routing import NoMetroError
 from .service import DayView, build_day_view
 from .store import Store, UserSettings, norm_transport
+from .texts import weather_line
+from .weather import get_weather
 
 log = logging.getLogger("bot.api")
 
@@ -345,9 +347,19 @@ async def today_payload(ctx: ApiCtx, u: UserSettings, now: datetime | None = Non
                        "exit": None, "arrival": None}
         else:
             t_block = await target_block(ctx, u, view.target, day, now, tdt)
+    weather = None
+    if u.home_lat is not None and u.home_lon is not None:
+        at = view.plan.exit_at if view.plan else now.replace(hour=8, minute=0)
+        w = await get_weather(u.home_lat, u.home_lon, at)
+        if w is not None:
+            weather = {"temp_c": w.temp_c, "precip_prob": w.precip_prob,
+                       "summary": weather_line(lang, w.temp_c, w.precip_prob, w.kind),
+                       "umbrella": w.umbrella}
     return {"status": "ok", "kind": "today", "date": day.isoformat(), "group": u.group,
             "lessons": lessons, "focus": focus, "suggest_next": nxt, "note": note,
             "metro_open": metro_open_info(now), "target": t_block,
+            "changes": ctx.store.get_changes(u.group, day.isoformat()),
+            "weather": weather,
             "push": _push_json(format_push_morning(d, "a", lang))}
 
 
@@ -388,6 +400,7 @@ async def tomorrow_payload(ctx: ApiCtx, u: UserSettings, now: datetime | None = 
             t_block = await target_block(ctx, u, view.target, day, now, tdt)
     return {"status": "ok", "kind": "tomorrow", "date": day.isoformat(), "group": u.group,
             "lessons": lessons, "note": note, "target": t_block,
+            "changes": ctx.store.get_changes(u.group, day.isoformat()),
             "push": _push_json(format_push_evening(d, "a", lang))}
 
 

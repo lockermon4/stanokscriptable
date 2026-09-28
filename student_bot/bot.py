@@ -19,6 +19,7 @@ from .buildings import BuildingStore, load_buildings_yaml
 from .cards import (build_evening, build_morning, evening_failed, format_day_list,
                     format_telegram_day, format_telegram_evening, format_telegram_morning,
                     with_metro, build_focus)
+from .changes import watch_loop
 from .config import Settings
 from .exit_time import (anchor_to_open, compute_exit, first_relevant_lesson, format_duration,
                          parse_target_time)
@@ -32,6 +33,7 @@ from .health import start_health_server, stop_health_server
 from .sendlog import SendLogMiddleware, install_send_logging, setup_logging
 from .service import LessonTargetError, build_day_view, compute_night_exit, lesson_target
 from .store import Store, UserSettings, fmt_coords, norm_transport, parse_coords
+from .weather import get_weather
 from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMORROW,
                      ask_address, ask_buffer, ask_custom_date, ask_evening, ask_lang,
                      ask_morning_lead, ask_new_address, ask_new_group, ask_note_date,
@@ -49,7 +51,7 @@ from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMO
                      start_back, start_need_group, start_need_home, start_new, start_route,
                      transport_buttons, transport_name, variants_buttons, variants_text,
                      target_buttons, target_exit_text, ask_target_time, addr_confirm_buttons,
-                     addr_pick_buttons)
+                     addr_pick_buttons, weather_line)
 from .address_check import format_confirm, match_candidate, parse_address
 
 
@@ -242,6 +244,11 @@ async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict,
                     text = format_telegram_morning(morning_card(view, note), u.lang)
                     if night_metro:
                         text += "\n" + metro_closed(u.lang)
+                    # Погода на время выхода (дом сохранён — иначе пропускаем молча).
+                    if u.home_lat is not None and u.home_lon is not None:
+                        w = await get_weather(u.home_lat, u.home_lon, view.plan.exit_at)
+                        if w is not None:
+                            text += "\n" + weather_line(u.lang, w.temp_c, w.precip_prob, w.kind)
                     await bot.send_message(u.user_id, text)
                     store.mark_sent(u.user_id, today.isoformat(), "morn")
         except Exception:
@@ -1301,6 +1308,27 @@ async def main() -> None:
             await safe_edit(fav_deleted(u.lang, name),
                             fav_list_buttons(store.list_favorites(uid), u.lang))
             return
+        if data.startswith("chg:recalc:"):
+            # Кнопка из уведомления об изменениях: обычный расчёт выхода на дату.
+            day_iso = data[len("chg:recalc:"):]
+            u = fresh()
+            try:
+                day = date.fromisoformat(day_iso)
+            except ValueError:
+                return
+            tz = ZoneInfo(settings.institution_tz)
+            now = datetime.now(tz)
+            if not u.group:
+                await safe_edit(need_group_first(u.lang))
+                return
+            view = await build_day_view(
+                group=u.group, day=day, now=now, home_address=u.home_address,
+                home_coords=home_coords_of(u), transport=u.transport,
+                buffer_min=u.buffer_min, for_today=(day == now.date()),
+                settings=settings, **deps)
+            note = store.get_note(uid, day_iso)
+            await safe_edit(format_telegram_morning(morning_card(view, note), u.lang))
+            return
 
     # Health-порт для Render Free + iOS API: работает параллельно с polling.
     # aiogram start_polling сам ловит SIGINT/SIGTERM -> выходим в finally и всё закрываем.
@@ -1310,10 +1338,12 @@ async def main() -> None:
                      buildings=buildings, geocoder=geocoder, routing=routing)
     health_runner = await start_health_server(ctx=api_ctx)
     sched_task = asyncio.create_task(scheduler_loop(bot, settings, store, deps, last_calc))
+    watch_task = asyncio.create_task(watch_loop(bot, settings, store, deps))
     try:
         await dp.start_polling(bot)
     finally:
         sched_task.cancel()
+        watch_task.cancel()
         await stop_health_server(health_runner)
         try:
             store.close()
