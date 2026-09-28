@@ -120,9 +120,9 @@ def test_places_cache_no_second_request():
     async def go():
         http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         p = TwoGisPlaces(api_key="k", http=http)
-        first = await p.search(55.79, 37.59)  # 3 запроса (по одному на категорию)
+        first = await p.search(55.79, 37.59)  # 4 запроса (по одному на категорию)
         n1 = len(calls)
-        assert n1 == 3 and len(first) >= 1
+        assert n1 == 4 and len(first) >= 1
         second = await p.search(55.79, 37.59)  # всё из кэша 24 ч
         assert len(calls) == n1
         assert [x.name for x in second] == [x.name for x in first]
