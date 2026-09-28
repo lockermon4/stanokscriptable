@@ -34,6 +34,7 @@ def test_evening_text_with_and_without_lessons():
     sched = DaySchedule(day=date(2026, 9, 25), group="G", lessons=(plan.lesson,))
     t = evening_text(sched, "взять халат")
     assert "пар: 1" in t and "Матан" in t and "взять халат" in t
+    assert "09:00–10:30 — Матан" in t and "Первая пара: 09:00–10:30" in t
     empty = DaySchedule(day=date(2026, 9, 27), group="G", lessons=())
     assert "занятий нет" in evening_text(empty, "")
 
@@ -44,3 +45,4 @@ def test_morning_text_honest_failures():
     t = morning_text(_plan())
     assert "приблизительная" in t  # OSRM честно помечен
     assert "Расчёт маршрута" in t  # время последнего расчёта показано
+    assert "Первая пара: 09:00–10:30 — Матан" in t

@@ -28,6 +28,26 @@ class LessonLine:
     time: str  # "10:15"
     subject: str
     room: str = ""  # "0209" (без "ауд.")
+    end: str = ""  # "11:50" (конец пары; пусто — показать только начало)
+
+
+def _end_str(lesson) -> str:
+    """Конец пары 'HH:MM' (неизвестен → +90 мин от начала)."""
+    from datetime import timedelta
+
+    end = lesson.ends_at or (lesson.starts_at + timedelta(minutes=90))
+    return end.strftime("%H:%M")
+
+
+def _range(lesson) -> str:
+    """'10:15–11:50': начало и конец пары."""
+    return f"{lesson.starts_at.strftime('%H:%M')}–{_end_str(lesson)}"
+
+
+def _lr(line) -> str:
+    """Диапазон для готовой строки: '10:15–11:50' (без конца — как было).
+    Утиный тип: LessonLine и MorningData (поля time/end)."""
+    return f"{line.time}–{line.end}" if line.end else line.time
 
 
 @dataclass(frozen=True)
@@ -43,6 +63,7 @@ class EveningData:
 class MorningData:
     ok: bool  # расписание получено
     time: str = ""  # начало первой пары
+    end: str = ""  # конец первой пары
     subject: str = ""
     place: str = ""  # raw room, e.g. "ИГ-1" (ауд./room added at render)
     route_ok: bool = False
@@ -65,7 +86,8 @@ class PushMsg:
 
 def build_evening(schedule, note: str) -> EveningData:
     lessons = tuple(
-        LessonLine(time=l.starts_at.strftime("%H:%M"), subject=l.subject, room=l.room)
+        LessonLine(time=l.starts_at.strftime("%H:%M"), subject=l.subject, room=l.room,
+                   end=_end_str(l))
         for l in schedule.active_lessons
     )
     first_place = f"ауд. {lessons[0].room}" if lessons and lessons[0].room else ""
@@ -82,8 +104,8 @@ def build_morning(lesson, plan, note: str = "", *,
     """lesson — первая актуальная пара (или None). plan — ExitPlan или None."""
     if lesson is None:
         return MorningData(ok=True)
-    base = dict(ok=True, time=lesson.starts_at.strftime("%H:%M"), subject=lesson.subject,
-                place=lesson.room or "", note=note.strip())
+    base = dict(ok=True, time=lesson.starts_at.strftime("%H:%M"), end=_end_str(lesson),
+                subject=lesson.subject, place=lesson.room or "", note=note.strip())
     if plan is None:
         err = "unknown_building" if unknown_building else ("route_failed" if route_failed else "")
         return MorningData(route_ok=False, route_error=err, **base)  # type: ignore
@@ -111,7 +133,7 @@ def format_telegram_evening(d: EveningData, lang: str = "ru") -> str:
     head = f"🌙 Tomorrow — {len(d.lessons)} {plural(len(d.lessons), lang)}" if en else \
         f"🌙 Завтра — {len(d.lessons)} {plural(len(d.lessons), lang)}"
     lines = [head]
-    lines += [f"{l.time} — {l.subject}" + (f", {_room(l.room, lang)}" if l.room else "")
+    lines += [f"{_lr(l)} — {l.subject}" + (f", {_room(l.room, lang)}" if l.room else "")
               for l in d.lessons]
     if d.note:
         lines.append(f"🎒 Take: {d.note}" if en else f"🎒 Взять: {d.note}")
@@ -144,7 +166,7 @@ def format_telegram_morning(d: MorningData, lang: str = "ru") -> str:
     head = f"🏃 Leave at {d.exit}" if (d.route_ok and en) else \
         (f"🏃 Выйти в {d.exit}" if d.route_ok else
          ("🏃 Couldn't calculate when to leave" if en else "🏃 Во сколько выйти — посчитать не вышло"))
-    lines = [head, f"{d.time} — {d.subject}" + (f", {_room(d.place, lang)}" if d.place else "")]
+    lines = [head, f"{_lr(d)} — {d.subject}" + (f", {_room(d.place, lang)}" if d.place else "")]
     if d.route_ok:
         ride = d.travel_txt + (f" ({d.metro_txt})" if d.metro_txt else "")
         lines.append(f"🚇 {ride} travel time" if en else f"🚇 {ride} в пути")
@@ -170,7 +192,7 @@ def build_focus(lesson, next_lesson, travel_s: int | None, buffer_min: int,
     from datetime import timedelta
 
     en = lang == "en"
-    t = lesson.starts_at.strftime("%H:%M")
+    t = _range(lesson)
     subj = lesson.subject
     if travel_s is None or not route_ok:
         if lesson.starts_at <= now < (lesson.ends_at or (lesson.starts_at + timedelta(minutes=90))):
@@ -203,9 +225,9 @@ def build_focus(lesson, next_lesson, travel_s: int | None, buffer_min: int,
             return f"{head}\n{v}"
         nxt = ""
         if next_lesson is not None:
-            nxt = (f"\nСледующая: {next_lesson.starts_at.strftime('%H:%M')} — "
+            nxt = (f"\nСледующая: {_range(next_lesson)} — "
                    f"{next_lesson.subject}.") if not en else \
-                (f"\nNext: {next_lesson.starts_at.strftime('%H:%M')} — {next_lesson.subject}.")
+                (f"\nNext: {_range(next_lesson)} — {next_lesson.subject}.")
         v = "🔴 Даже выйдя сейчас, к концу не успеть." if not en else \
             "🔴 Even leaving now won't make it before the end."
         return f"{head}\n{v}{nxt}"
@@ -219,9 +241,9 @@ def build_focus(lesson, next_lesson, travel_s: int | None, buffer_min: int,
         return f"{head}\n{v}"
     nxt = ""
     if next_lesson is not None:
-        nxt = (f"\nСледующая: {next_lesson.starts_at.strftime('%H:%M')} — "
+        nxt = (f"\nСледующая: {_range(next_lesson)} — "
                f"{next_lesson.subject}.") if not en else \
-            (f"\nNext: {next_lesson.starts_at.strftime('%H:%M')} — {next_lesson.subject}.")
+            (f"\nNext: {_range(next_lesson)} — {next_lesson.subject}.")
     v = "🔴 К этой уже не успеть." if not en else "🔴 Too late for this one."
     return f"{head}\n{v}{nxt}"
 
@@ -237,7 +259,7 @@ def format_telegram_day(label: str, d: EveningData, exit_line: str = "", lang: s
         note = f"\n🎒 Note: {d.note}" if en else f"\n🎒 Заметка: {d.note}"
         return t if not d.note else t + note
     lines = [f"📅 {label} — {len(d.lessons)} {plural(len(d.lessons), lang)}"]
-    lines += [f"{l.time} — {l.subject}" + (f", {_room(l.room, lang)}" if l.room else "")
+    lines += [f"{_lr(l)} — {l.subject}" + (f", {_room(l.room, lang)}" if l.room else "")
               for l in d.lessons]
     if d.note:
         lines.append(f"🎒 Note: {d.note}" if en else f"🎒 Заметка: {d.note}")
@@ -264,7 +286,7 @@ def format_day_list(schedule, now, lang: str = "ru") -> str:
         else:
             mark = "▫️"
         room = (f", {_room(les.room, lang)}" if les.room else "")
-        lines.append(f"{mark} {les.starts_at.strftime('%H:%M')} — {les.subject}{room}")
+        lines.append(f"{mark} {_range(les)} — {les.subject}{room}")
     return "\n".join(lines)
 
 
@@ -289,11 +311,11 @@ def format_push_evening(d: EveningData, variant: str = "a", lang: str = "ru") ->
     if variant == "b":
         n = len(d.lessons)
         title = f"📚 {n} {plural(n, lang)} " + ("tomorrow" if en else "завтра")
-        body = (f"First at {first.time}{room}{take}" if en else f"Первая в {first.time}{room}{take}")
+        body = (f"First at {_lr(first)}{room}{take}" if en else f"Первая в {_lr(first)}{room}{take}")
     else:
         n = len(d.lessons)
         title = (f"Tomorrow: {n} {plural(n, lang)} 📚" if en else f"Завтра: {n} {plural(n, lang)} 📚")
-        body = f"{first.time} {subj}{take}"
+        body = f"{_lr(first)} {subj}{take}"
     return PushMsg(title, body, {"kind": "evening", "ok": True, "count": len(d.lessons),
                                  "first_at": first.time, "day": d.day,
                                  "note": bool(d.note)})
@@ -306,20 +328,21 @@ def format_push_morning(d: MorningData, variant: str = "a", lang: str = "ru") ->
                        "No classes left." if en else "Актуальных занятий не осталось.",
                        {"kind": "morning", "ok": d.ok})
     subj = short(d.subject, PUSH_SUBJECT_LEN)
+    span = _lr(d)
     if not d.route_ok:
-        return PushMsg(f"Class at {d.time} 🔔" if en else f"Пара в {d.time} 🔔",
+        return PushMsg(f"Class at {span} 🔔" if en else f"Пара в {span} 🔔",
                        f"{subj}. Couldn't calculate the route — leave with spare time." if en else
                        f"{subj}. Дорогу посчитать не вышло — выходите с запасом.",
                        {"kind": "morning", "route_ok": False, "at": d.time})
     room = f", room {d.place}" if (en and d.place) else (f", ауд. {d.place}" if d.place else "")
     if variant == "b":
         title = f"🏃 {d.exit} — exit" if en else f"🏃 {d.exit} — выход"
-        body = (f"Class at {d.time}{room}. Travel {d.travel_txt}." if en else
-                f"Пара в {d.time}{room}. Дорога {d.travel_txt}.")
+        body = (f"Class at {span}{room}. Travel {d.travel_txt}." if en else
+                f"Пара в {span}{room}. Дорога {d.travel_txt}.")
     else:
         title = f"Leave at {d.exit} 🏃" if en else f"Выйти в {d.exit} 🏃"
-        body = (f"{d.time} {subj}, {d.travel_txt} travel." if en else
-                f"{d.time} {subj}, {d.travel_txt} в пути.")
+        body = (f"{span} {subj}, {d.travel_txt} travel." if en else
+                f"{span} {subj}, {d.travel_txt} в пути.")
     if d.late:
         body += " Already past!" if en else " Время уже прошло!"
     return PushMsg(title, body, {"kind": "morning", "route_ok": True, "exit": d.exit,

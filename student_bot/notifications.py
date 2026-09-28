@@ -1,7 +1,7 @@
 """Notification texts + send-time decisions. Pure functions (testable without Telegram)."""
 from __future__ import annotations
 
-from datetime import datetime, time as dtime
+from datetime import datetime, timedelta, time as dtime
 
 from .exit_time import ExitPlan, format_duration
 from .models import DaySchedule
@@ -12,19 +12,25 @@ def parse_hhmm(s: str) -> dtime:
     return dtime(int(h), int(m))
 
 
+def lesson_range(les) -> str:
+    """'09:00–10:30': начало и конец пары (конец неизвестен → +90 мин)."""
+    end = les.ends_at or (les.starts_at + timedelta(minutes=90))
+    return f"{les.starts_at.strftime('%H:%M')}–{end.strftime('%H:%M')}"
+
+
 def evening_text(schedule: DaySchedule, note: str) -> str:
     if not schedule.active_lessons:
         base = f"Завтра ({schedule.day.isoformat()}): занятий нет. Отдыхайте!"
     else:
         lines = [f"Завтра ({schedule.day.isoformat()}): пар: {schedule.count}"]
         for les in schedule.active_lessons:
-            t = les.starts_at.strftime("%H:%M")
+            t = lesson_range(les)
             room = f", ауд. {les.room}" if les.room else ""
             kind = f" ({les.kind})" if les.kind else ""
             lines.append(f"• {t} — {les.subject}{kind}{room}")
         first = schedule.active_lessons[0]
         where = f"ауд. {first.room}" if first.room else "аудитория неизвестна"
-        lines.append(f"Первая пара: {first.starts_at.strftime('%H:%M')}, {where}.")
+        lines.append(f"Первая пара: {lesson_range(first)}, {where}.")
         base = "\n".join(lines)
     if note.strip():
         base += f"\nЧто взять: {note.strip()}"
@@ -40,7 +46,7 @@ def morning_text(plan: ExitPlan | None, lesson_note: str = "", *, route_failed: 
             return "Расписание есть, но время дороги сейчас посчитать не получилось. Выходите с запасом."
         return "Сегодня пар больше нет."
     les = plan.lesson
-    t = les.starts_at.strftime("%H:%M")
+    t = lesson_range(les)
     kind = f" ({les.kind})" if les.kind else ""
     where = f"ауд. {les.room}" if les.room else "аудитория неизвестна"
     approx = " (оценка приблизительная: провайдер не учитывает метро/пробки/ожидание в реальном времени)" if plan.is_approximate else ""

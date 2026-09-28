@@ -448,6 +448,15 @@ def _hm(dt) -> str:
     return dt.strftime("%H:%M") if dt is not None else "—"
 
 
+def lesson_range(lesson) -> str:
+    """'10:15–11:50' для Lesson (конец неизвестен → +90 мин от начала)."""
+    from datetime import timedelta
+
+    start = lesson.starts_at.strftime("%H:%M")
+    end = lesson.ends_at or (lesson.starts_at + timedelta(minutes=90))
+    return f"{start}–{end.strftime('%H:%M')}"
+
+
 def night_exit_text(lang: str, lesson_line: str, out) -> str:
     """Результат ночного метро-расчёта (NightOutcome)."""
     from .metro_hours import opens_at_text

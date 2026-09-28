@@ -42,7 +42,7 @@ from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMO
                      ask_note_text, ask_notify, ask_route_mode, ask_transport, buffer_buttons,
                      cancel_buttons,                      evening_buttons, lang_buttons, leave_error_text,
                      ios_key_buttons, ios_key_text, leave_now_buttons, leave_now_line,
-                     main_menu_text, menu_kb, menu_match, mode_buttons, morning_lead_buttons,
+                     lesson_range, main_menu_text, menu_kb, menu_match, mode_buttons, morning_lead_buttons,
                      metro_closed, metro_gray,
                      need_group_first, need_home, norm_lang, no_metro_fallback,
                      note_card, note_confirm_delete, note_date_buttons, note_deleted, note_item_buttons,
@@ -508,7 +508,7 @@ async def main() -> None:
                     if from_xy is None:
                         await m.answer(route_failed(lang), reply_markup=kb)
                     else:
-                        lesson_line = (f"{tgt.lesson.starts_at.strftime('%H:%M')} — "
+                        lesson_line = (f"{lesson_range(tgt.lesson)} — "
                                        f"{tgt.lesson.subject}, {tgt.label}")
                         route_sessions[m.from_user.id] = {
                             "from": from_xy, "to": (tgt.lat, tgt.lon), "label": tgt.label,
@@ -564,7 +564,7 @@ async def main() -> None:
                                 buildings=deps["buildings"], group=u.group, day=day,
                                 now=now, for_today=True)
                             if not isinstance(tgt, LessonTargetError):
-                                lesson_line = (f"{tgt.lesson.starts_at.strftime('%H:%M')} — "
+                                lesson_line = (f"{lesson_range(tgt.lesson)} — "
                                                f"{tgt.lesson.subject}, {tgt.label}")
                                 route_sessions[m.from_user.id] = {
                                     "from": from_xy, "to": (tgt.lat, tgt.lon),
@@ -592,7 +592,7 @@ async def main() -> None:
                                 buildings=deps["buildings"], group=u.group, day=day,
                                 now=now, for_today=False)
                             if not isinstance(tgt, LessonTargetError):
-                                lesson_line = (f"{tgt.lesson.starts_at.strftime('%H:%M')} — "
+                                lesson_line = (f"{lesson_range(tgt.lesson)} — "
                                                f"{tgt.lesson.subject}, {tgt.label}")
                                 route_sessions[m.from_user.id] = {
                                     "from": from_xy, "to": (tgt.lat, tgt.lon),

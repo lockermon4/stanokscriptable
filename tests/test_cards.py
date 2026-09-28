@@ -36,8 +36,29 @@ def test_evening_answers_count_what_take():
                              _les(12, 20, "Основы программирования", "0209")), "халат")
     t = format_telegram_evening(d)
     assert t.splitlines()[0] == "🌙 Завтра — 2 пары"
-    assert "10:15 — Начертательная геометрия, ауд. ИГ-1" in t
+    assert "10:15–11:50 — Начертательная геометрия, ауд. ИГ-1" in t
     assert t.rstrip().endswith("🎒 Взять: халат")
+
+
+def test_lesson_range_everywhere_and_fallback():
+    """Каждая пара — 'HH:MM–HH:MM'; без ends_at — +90 мин."""
+    from student_bot.cards import build_focus, format_day_list, format_telegram_day
+    from student_bot.texts import lesson_range
+    from datetime import timedelta
+
+    les = _les(10, 15, "М", "0209")  # 10:15–11:50 (95 мин)
+    assert lesson_range(les) == "10:15–11:50"
+    no_end = Lesson(group="G", day=date(2026, 9, 25),
+                    starts_at=datetime(2026, 9, 25, 8, 30, tzinfo=TZ),
+                    ends_at=None, subject="Ф")
+    assert lesson_range(no_end) == "08:30–10:00"
+    d = build_evening(_sched(les), "")
+    assert "10:15–11:50 — М, ауд. 0209" in format_telegram_day("Сегодня", d, "", "ru")
+    m = format_telegram_morning(build_morning(les, _plan(les)))
+    assert m.splitlines()[1].startswith("10:15–11:50 — М")
+    now = datetime(2026, 9, 25, 7, 0, tzinfo=TZ)
+    assert build_focus(les, None, 3600, 10, now, True, "ru").startswith("🎯 10:15–11:50 — М")
+    assert "10:15–11:50 — М" in format_day_list(_sched(les), now, "ru")
 
 
 def test_evening_long_subject_plural():
