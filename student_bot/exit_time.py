@@ -58,3 +58,33 @@ def format_duration(seconds: int) -> str:
     m = max(0, int(seconds) // 60)
     h, mm = divmod(m, 60)
     return f"{h} ч {mm} мин" if h else f"{mm} мин"
+
+
+def anchor_to_open(exit_needed: datetime, lesson_start: datetime, travel_s: int,
+                   open_dt: datetime) -> tuple[str, datetime, datetime]:
+    """Привязка выхода к открытию метро (чистая функция).
+
+    exit_needed < open_dt (выход попадает в 01:00–05:30) → старт отсчёта
+    переносится на open_dt (05:30): ("anchored"|"miss", open_dt, arrival).
+    "miss" — даже выйдя в открытие, к началу пары не успеть.
+    Иначе ("ok", exit_needed, arrival) — обычный расчёт.
+    """
+    if exit_needed >= open_dt:
+        return ("ok", exit_needed, exit_needed + timedelta(seconds=travel_s))
+    arrival = open_dt + timedelta(seconds=travel_s)
+    if arrival <= lesson_start:
+        return ("anchored", open_dt, arrival)
+    return ("miss", open_dt, arrival)
+
+
+def parse_target_time(text: str, day, tz) -> datetime | None:
+    """'08:00' / '8:05' (+пробелы) -> tz-aware datetime в указанный день. Иначе None."""
+    import re
+
+    m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", text or "")
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    if not (0 <= h <= 23 and 0 <= mi <= 59):
+        return None
+    return datetime(day.year, day.month, day.day, h, mi, tzinfo=tz)

@@ -28,10 +28,11 @@ from aiohttp import web
 
 from .cards import (PushMsg, build_evening, build_morning,
                     format_push_evening, format_push_morning, with_metro)
-from .exit_time import format_duration
-from .metro_hours import metro_state, opens_at_text
+from .exit_time import anchor_to_open, format_duration, parse_target_time
+from .metro_hours import OPEN_H, OPEN_M, metro_state, opens_at_text
+from .routing import NoMetroError
 from .service import DayView, build_day_view
-from .store import Store, UserSettings
+from .store import Store, UserSettings, norm_transport
 
 log = logging.getLogger("bot.api")
 
@@ -240,7 +241,72 @@ def unavailable(reason: str, detail: str, push: PushMsg) -> dict:
             "push": _push_json(push)}
 
 
-async def today_payload(ctx: ApiCtx, u: UserSettings, now: datetime | None = None) -> dict:
+async def target_block(ctx: ApiCtx, u: UserSettings, lesson: Any, day: Any,
+                       now: datetime, target_dt: datetime) -> dict:
+    """'Приехать к HH:MM': обратный расчёт + якорь 05:30 (чистая логика та же,
+    что в боте: anchor_to_open). lesson — опорная пара для проверки."""
+    lang = u.lang
+    mode = norm_transport(u.transport)
+    fr = _home_coords(u)
+    if fr is None:
+        try:
+            fr = await ctx.geocoder.geocode(u.home_address) if u.home_address.strip() else None
+        except Exception:
+            fr = None
+    base = {"requested": target_dt.strftime("%H:%M"), "mode": mode,
+            "lesson_time": lesson.starts_at.strftime("%H:%M")}
+    if fr is None:
+        return {**base, "outcome": "no_data", "exit": None, "arrival": None}
+    lat, lon, _ = _building_of(ctx, lesson)
+    if lat is None:
+        return {**base, "outcome": "no_data", "exit": None, "arrival": None}
+    try:
+        if mode == "metro":
+            try:
+                opts = await ctx.routing.metro(fr, (lat, lon), use_cache=False)
+            except NoMetroError:
+                opts = await ctx.routing.walking(fr, (lat, lon), use_cache=False)
+        else:
+            opts = await ctx.routing.walking(fr, (lat, lon), use_cache=False)
+    except Exception as e:
+        log.warning("api target route failed: %s", e)
+        opts = []
+    if not opts:
+        return {**base, "outcome": "no_data", "exit": None, "arrival": None}
+    travel_s = opts[0].duration_s
+    exit_needed = target_dt - timedelta(seconds=travel_s, minutes=u.buffer_min)
+    open_dt = datetime(target_dt.year, target_dt.month, target_dt.day,
+                       OPEN_H, OPEN_M, tzinfo=target_dt.tzinfo)
+    kind, exit_at, arrival_at = anchor_to_open(exit_needed, lesson.starts_at, travel_s, open_dt)
+    out = {**base, "outcome": kind, "exit": exit_at.strftime("%H:%M"),
+           "arrival": arrival_at.strftime("%H:%M"), "travel_s": travel_s,
+           "travel_txt": "~" + format_duration(travel_s)}
+    if kind == "miss" and mode == "metro":
+        try:
+            w = await ctx.routing.walking(fr, (lat, lon), use_cache=False)
+        except Exception:
+            w = []
+        if w:
+            cand = target_dt - timedelta(seconds=w[0].duration_s, minutes=u.buffer_min)
+            if cand >= now:
+                out["walk_exit"] = cand.strftime("%H:%M")
+                out["walk_arrival"] = (cand + timedelta(seconds=w[0].duration_s)).strftime("%H:%M")
+    return out
+
+
+def parse_target_or_400(target_raw: str | None, day: Any, tz) -> tuple[datetime | None, dict | None]:
+    """Валидация target_arrival для хендлеров: (dt, None) или (None, 400-body)."""
+    if target_raw is None:
+        return None, None
+    dt = parse_target_time(target_raw, day, tz)
+    if dt is None:
+        return None, {"status": "error", "error": "bad_target_arrival",
+                      "hint": "HH:MM, e.g. 08:00"}
+    return dt, None
+
+
+async def today_payload(ctx: ApiCtx, u: UserSettings, now: datetime | None = None,
+                      target: str | None = None) -> dict:
     now = _now(ctx, now)
     lang = u.lang
     if not u.group:
@@ -270,13 +336,23 @@ async def today_payload(ctx: ApiCtx, u: UserSettings, now: datetime | None = Non
         d = with_metro(d, view.metro_summary)
     focus = _focus_json(u, view, now)
     nxt = await suggest_next(ctx, u, view, now)
+    t_block = None
+    if target is not None:
+        tz = ZoneInfo(ctx.settings.institution_tz)
+        tdt = parse_target_time(target, day, tz)
+        if tdt is None or view.target is None:
+            t_block = {"requested": target, "outcome": "no_data",
+                       "exit": None, "arrival": None}
+        else:
+            t_block = await target_block(ctx, u, view.target, day, now, tdt)
     return {"status": "ok", "kind": "today", "date": day.isoformat(), "group": u.group,
             "lessons": lessons, "focus": focus, "suggest_next": nxt, "note": note,
-            "metro_open": metro_open_info(now),
+            "metro_open": metro_open_info(now), "target": t_block,
             "push": _push_json(format_push_morning(d, "a", lang))}
 
 
-async def tomorrow_payload(ctx: ApiCtx, u: UserSettings, now: datetime | None = None) -> dict:
+async def tomorrow_payload(ctx: ApiCtx, u: UserSettings, now: datetime | None = None,
+                         target: str | None = None) -> dict:
     now = _now(ctx, now)
     lang = u.lang
     if not u.group:
@@ -301,8 +377,17 @@ async def tomorrow_payload(ctx: ApiCtx, u: UserSettings, now: datetime | None = 
     note = ctx.store.get_note(u.user_id, day.isoformat())
     lessons = [_lesson_json(l, ctx) for l in view.schedule.active_lessons]
     d = build_evening(view.schedule, note)
+    t_block = None
+    if target is not None:
+        tz = ZoneInfo(ctx.settings.institution_tz)
+        tdt = parse_target_time(target, day, tz)
+        if tdt is None or view.target is None:
+            t_block = {"requested": target, "outcome": "no_data",
+                       "exit": None, "arrival": None}
+        else:
+            t_block = await target_block(ctx, u, view.target, day, now, tdt)
     return {"status": "ok", "kind": "tomorrow", "date": day.isoformat(), "group": u.group,
-            "lessons": lessons, "note": note,
+            "lessons": lessons, "note": note, "target": t_block,
             "push": _push_json(format_push_evening(d, "a", lang))}
 
 
@@ -355,11 +440,18 @@ async def _guarded(ctx: ApiCtx, request: web.Request, kind: str) -> web.Response
     u = _auth_user(ctx, request)
     if u is None:
         return web.json_response({"status": "error", "error": "invalid_token"}, status=401)
+    target_raw = request.query.get("target_arrival")
+    if target_raw is not None and kind in ("today", "tomorrow"):
+        tz = ZoneInfo(ctx.settings.institution_tz)
+        day = datetime.now(tz).date() + (timedelta(days=1) if kind == "tomorrow" else timedelta(0))
+        _, err = parse_target_or_400(target_raw, day, tz)
+        if err is not None:
+            return web.json_response(err, status=400)
     try:
         if kind == "today":
-            return web.json_response(await today_payload(ctx, u))
+            return web.json_response(await today_payload(ctx, u, target=target_raw))
         if kind == "tomorrow":
-            return web.json_response(await tomorrow_payload(ctx, u))
+            return web.json_response(await tomorrow_payload(ctx, u, target=target_raw))
         return web.json_response(await exit_time_payload(ctx, u))
     except Exception as e:
         log.exception("api %s failed", kind)

@@ -151,7 +151,7 @@ def test_cache_ttl_expires(monkeypatch):
 
 def test_fresh_bypass_for_favorites(monkeypatch):
     monkeypatch.setattr(R, "parse_metro_payload",
-                        lambda p: [RouteOption(mode="metro", duration_s=1200, summary="20 мин")])
+                        lambda p, **kw: [RouteOption(mode="metro", duration_s=1200, summary="20 мин")])
     calls = []
 
     def h(req):
@@ -202,7 +202,7 @@ def test_rate_limit_caps_burst(monkeypatch):
 
 
 def test_metro_empty_means_no_metro(monkeypatch):
-    monkeypatch.setattr(R, "parse_metro_payload", lambda p: [])
+    monkeypatch.setattr(R, "parse_metro_payload", lambda p, **kw: [])
     r = ok_client(lambda req: payload_ok())
     # пустой список от парсера сервис превратит в NoMetroError/route_failed;
     # сам клиент пустой ответ метро не кэширует как успех:

@@ -20,16 +20,17 @@ from .cards import (build_evening, build_morning, evening_failed, format_day_lis
                     format_telegram_day, format_telegram_evening, format_telegram_morning,
                     with_metro, build_focus)
 from .config import Settings
-from .exit_time import compute_exit, first_relevant_lesson, format_duration
+from .exit_time import (anchor_to_open, compute_exit, first_relevant_lesson, format_duration,
+                         parse_target_time)
 from .geocode import NominatimGeocoder
-from .metro_hours import metro_state
+from .metro_hours import OPEN_H, OPEN_M, metro_state
 from .normalize import normalize_day, normalize_groups
 from .notifications import morning_notify_time, parse_hhmm
 from .routing import NoMetroError, RoutingError, TwoGisRouting
 from .schedule_client import ScheduleClient
 from .health import start_health_server, stop_health_server
 from .sendlog import SendLogMiddleware, install_send_logging, setup_logging
-from .service import LessonTargetError, build_day_view, lesson_target
+from .service import LessonTargetError, build_day_view, compute_night_exit, lesson_target
 from .store import Store, UserSettings, fmt_coords, norm_transport, parse_coords
 from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMORROW,
                      ask_address, ask_buffer, ask_custom_date, ask_evening, ask_lang,
@@ -43,10 +44,12 @@ from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMO
                      note_card, note_confirm_delete, note_date_buttons, note_deleted, note_item_buttons,
                      note_saved, notes_menu_buttons, notes_menu_text, notify_menu_buttons,
                      addr_saved_new, fav_confirm_delete, fav_deleted, fav_item_buttons,
-                     fav_list_buttons, fav_list_text, recalc_failed, route_details,
+                     fav_list_buttons, fav_list_text, night_exit_text, recalc_failed, route_details,
                      route_details_buttons, route_failed, route_saved, route_session_expired, settings_buttons, settings_view,
                      start_back, start_need_group, start_need_home, start_new, start_route,
-                     transport_buttons, transport_name, variants_buttons, variants_text)
+                     transport_buttons, transport_name, variants_buttons, variants_text,
+                     target_buttons, target_exit_text, ask_target_time, addr_confirm_buttons,
+                     addr_pick_buttons)
 from .address_check import format_confirm, match_candidate, parse_address
 
 
@@ -295,6 +298,25 @@ async def main() -> None:
         except Exception:
             return None
 
+    async def fetch_mode_travel(sess: dict, mode: str,
+                                use_cache: bool = True) -> tuple[int | None, str, bool]:
+        """Свежая дорога по режиму: (travel_s, travel_txt, used_walk_fallback).
+        Метро недоступно -> пешком с флагом (честно, не молча)."""
+        try:
+            if mode == "metro":
+                try:
+                    opts = await routing.metro(sess["from"], sess["to"], use_cache=use_cache)
+                except NoMetroError:
+                    opts = await routing.walking(sess["from"], sess["to"], use_cache=use_cache)
+                    return (opts[0].duration_s, opts[0].summary, True) if opts else (None, "", True)
+            else:
+                opts = await routing.walking(sess["from"], sess["to"], use_cache=use_cache)
+            if not opts:
+                return None, "", False
+            return opts[0].duration_s, opts[0].summary, False
+        except RoutingError:
+            return None, "", False
+
     async def recalc_block(u) -> str:
         """Fresh exit/travel/arrival for today from CURRENT stored settings.
         Called after group/address/transport/buffer changes. Never returns
@@ -328,11 +350,31 @@ async def main() -> None:
         pending[m.from_user.id] = "address_confirm"
         kb = kb_for(lang)
         if lang == "en":
-            await m.answer(f"Found: {label}.\nIs this your home? Reply “yes” or “no”.",
-                           reply_markup=kb)
+            await m.answer(f"Found: {label}.\nIs this your home?",
+                           reply_markup=addr_confirm_buttons(lang))
         else:
-            await m.answer(f"Нашёл: {label}.\nЭто ваш дом? Ответьте «да» или «нет».",
-                           reply_markup=kb)
+            await m.answer(f"Нашёл: {label}.\nЭто ваш дом?",
+                           reply_markup=addr_confirm_buttons(lang))
+
+    async def save_home_text(uid: int, u) -> str:
+        """Сохранить addr_picks[uid][0] как дом; вернуть текст ответа.
+        Общий для текстового 'да' и кнопки addr:yes."""
+        lang = u.lang
+        picks = addr_picks.pop(uid, [])
+        if not picks:
+            pending.pop(uid, None)
+            return ("Options expired, send the address again." if lang == "en" else
+                    "Варианты устарели, введите адрес ещё раз.")
+        label, lat, lon = picks[0]
+        u.home_address = label
+        u.home_lat, u.home_lon = lat, lon
+        store.save_user(u)
+        pending.pop(uid, None)
+        routing_changed(uid)  # old home numbers are stale from here on
+        recalc = await recalc_block(u)
+        saved = addr_saved_new(lang, label)
+        tail = recalc if recalc else (recalc_failed(lang) if u.group else "")
+        return saved + (f"\n\n{tail}" if tail else "")
 
     groups_cache: dict[str, list[str]] = {"at": 0.0, "names": []}
 
@@ -501,9 +543,28 @@ async def main() -> None:
                         card = evening_failed(day.isoformat())
                     else:
                         card = build_evening(view.schedule, note)
+                    # Сессия для "🎯 Приехать к...": первая пара завтра + точка дома.
+                    t_markup: Any = kb
+                    if view.target is not None:
+                        from_xy = await home_xy(u)
+                        if from_xy is not None:
+                            tgt = await lesson_target(
+                                settings=settings, schedule_client=deps["schedule_client"],
+                                buildings=deps["buildings"], group=u.group, day=day,
+                                now=now, for_today=False)
+                            if not isinstance(tgt, LessonTargetError):
+                                lesson_line = (f"{tgt.lesson.starts_at.strftime('%H:%M')} — "
+                                               f"{tgt.lesson.subject}, {tgt.label}")
+                                route_sessions[m.from_user.id] = {
+                                    "from": from_xy, "to": (tgt.lat, tgt.lon),
+                                    "label": tgt.label, "lesson_line": lesson_line,
+                                    "lesson": tgt.lesson, "buffer": u.buffer_min,
+                                    "mode": norm_transport(u.transport),
+                                    "options": [], "fallback": False}
+                                t_markup = target_buttons(lang)
                     await m.answer(format_telegram_day(f"{label}, {day.strftime('%d.%m')}", card,
                                                        day_exit_line(view, lang) if view.target else "",
-                                                       lang), reply_markup=kb)
+                                                       lang), reply_markup=t_markup)
             return
         if action == "notes":
             await m.answer(notes_menu_text(lang), reply_markup=notes_menu_buttons(lang))
@@ -530,12 +591,12 @@ async def main() -> None:
         addr_picks[uid] = [(f"📍 {lat}, {lon}", lat, lon)]
         pending[uid] = "address_confirm"
         if lang == "en":
-            await m.answer(f"Pinned: {lat}, {lon}.{near}\nSave as home? Reply “yes” or “no”.",
-                           reply_markup=kb)
+            await m.answer(f"Pinned: {lat}, {lon}.{near}\nSave as home?",
+                           reply_markup=addr_confirm_buttons(lang))
         else:
             await m.answer(f"Принял точку: {lat}, {lon}.{near}\n"
-                           f"Сохранить как дом? Ответьте «да» или «нет».",
-                           reply_markup=kb)
+                           f"Сохранить как дом?",
+                           reply_markup=addr_confirm_buttons(lang))
 
     @dp.message(F.text)
     async def fallback(m: Message):
@@ -551,9 +612,9 @@ async def main() -> None:
         def variants_msg(suitable):
             lines = "\n".join(f"{i + 1}. {lbl}" for i, (lbl, _, _) in enumerate(suitable))
             if en:
-                return f"Found several matching houses:\n{lines}\nReply with the number you need."
+                return f"Found several matching houses:\n{lines}\nPick the number below."
             return (f"Нашёл несколько подходящих домов:\n{lines}\n"
-                    f"Ответьте номером нужного.")
+                    f"Выберите номер кнопкой ниже.")
 
         async def run_verify(a):
             status, suitable, msg = await verify_address(a, lang)
@@ -562,7 +623,8 @@ async def main() -> None:
             elif status == "ok-many":
                 addr_picks[uid] = suitable
                 pending[uid] = "address_pick"
-                await m.answer(variants_msg(suitable), reply_markup=kb)
+                await m.answer(variants_msg(suitable),
+                               reply_markup=addr_pick_buttons(suitable, lang))
             else:
                 pending[uid] = "address"
                 await m.answer(msg, reply_markup=kb)
@@ -598,22 +660,7 @@ async def main() -> None:
             return
         if state == "address_confirm":
             if low in ("да", "ага", "точно", "верно", "подтверждаю", "yes", "y", "yeah", "ok"):
-                picks = addr_picks.pop(uid, [])
-                if picks:
-                    label, lat, lon = picks[0]
-                    u.home_address = label
-                    u.home_lat, u.home_lon = lat, lon
-                    store.save_user(u)
-                    pending.pop(uid, None)
-                    routing_changed(uid)  # old home numbers are stale from here on
-                    recalc = await recalc_block(u)
-                    saved = addr_saved_new(lang, label)
-                    tail = recalc if recalc else (recalc_failed(lang) if u.group else "")
-                    await m.answer(saved + (f"\n\n{tail}" if tail else ""), reply_markup=kb)
-                else:
-                    pending.pop(uid, None)
-                    await m.answer("Options expired, send the address again." if en else
-                                   "Варианты устарели, введите адрес ещё раз.", reply_markup=kb)
+                await m.answer(await save_home_text(uid, u), reply_markup=kb)
                 return
             if low in ("нет", "не", "no", "n", "не мой", "не мой дом", "not mine"):
                 addr_picks.pop(uid, None)
@@ -743,6 +790,46 @@ async def main() -> None:
             await m.answer(note_saved(lang, note_label(iso), text),
                            reply_markup=notes_menu_buttons(lang))
             return
+        if state == "target_time":
+            # "🎯 Приехать к ЧЧ:ММ": обратный расчёт, статус метро — на момент выхода.
+            sess = route_sessions.get(uid)
+            tz = ZoneInfo(settings.institution_tz)
+            now = datetime.now(tz)
+            lesson = (sess or {}).get("lesson")
+            if not sess or lesson is None:
+                pending.pop(uid, None)
+                await m.answer(route_session_expired(lang), reply_markup=kb)
+                return
+            target = parse_target_time(text, lesson.starts_at.date(), tz)
+            if target is None:
+                await m.answer(ask_target_time(lang, sess["lesson_line"]),
+                               reply_markup=cancel_buttons(lang))
+                return
+            pending.pop(uid, None)
+            mode = sess.get("mode", "walk")
+            buf = sess.get("buffer", 10)
+            travel_s, _, _ = await fetch_mode_travel(sess, mode)
+            if travel_s is None:
+                await m.answer(route_failed(lang), reply_markup=kb)
+                return
+            exit_needed = target - timedelta(seconds=travel_s, minutes=buf)
+            open_dt = datetime(target.year, target.month, target.day,
+                               OPEN_H, OPEN_M, tzinfo=tz)
+            kind, exit_at, arrival_at = anchor_to_open(exit_needed, lesson.starts_at,
+                                                       travel_s, open_dt)
+            walk_exit_at = walk_arrival_at = None
+            if kind == "miss" and mode == "metro":
+                w_s, _, _ = await fetch_mode_travel(sess, "walk")
+                if w_s is not None:
+                    cand = target - timedelta(seconds=w_s, minutes=buf)
+                    if cand >= now:
+                        walk_exit_at = cand
+                        walk_arrival_at = cand + timedelta(seconds=w_s)
+            await m.answer(target_exit_text(lang, sess["lesson_line"], kind, exit_at,
+                                            arrival_at, f"~{format_duration(travel_s)}",
+                                            walk_exit_at, walk_arrival_at),
+                           reply_markup=kb)
+            return
         if low.startswith(("покажи ", "show ")) or \
                 (len(text) >= 10 and text[:10].replace("-", "").isdigit()):
             if low.startswith(("покажи ", "show ")):
@@ -815,7 +902,38 @@ async def main() -> None:
             pending.pop(uid, None)
             addr_picks.pop(uid, None)
             note_tmp.pop(uid, None)
+            route_sessions.pop(uid, None)
             await show_main_menu(cb, fresh().lang)
+            return
+
+        # --- address confirm / pick (buttons mirror the "да/нет" and number text) ---
+        if data == "addr:yes":
+            await safe_edit(await save_home_text(uid, fresh()))
+            return
+        if data == "addr:no":
+            u = fresh()
+            addr_picks.pop(uid, None)
+            pending[uid] = "address"
+            await safe_edit("OK, not saving. Clarify the address or send a pin." if u.lang == "en" else
+                            "Хорошо, не сохраняю. Уточните адрес текстом или пришлите геоточку.")
+            return
+        if data.startswith("addrpick:"):
+            try:
+                i = int(data[len("addrpick:"):])
+            except ValueError:
+                return
+            picks = addr_picks.get(uid, [])
+            u = fresh()
+            if 0 <= i < len(picks):
+                label, lat, lon = picks[i]
+                addr_picks[uid] = [(label, lat, lon)]
+                pending[uid] = "address_confirm"
+                ask = (f"Found: {label}.\nIs this your home?") if u.lang == "en" else \
+                    f"Нашёл: {label}.\nЭто ваш дом?"
+                await safe_edit(ask, addr_confirm_buttons(u.lang))
+            else:
+                await safe_edit(f"Number from 1 to {len(picks)}." if u.lang == "en" else
+                                f"Номер от 1 до {len(picks)}.")
             return
 
         # --- settings ---
@@ -987,11 +1105,28 @@ async def main() -> None:
         # --- маршруты 2GIS: тип -> варианты -> детали + сохранить; избранное ---
         async def show_options(sess: dict, use_cache: bool) -> None:
             """Запросить варианты по sess[from/to/mode], показать кнопками.
-            Ночью (01:00–05:30) метро не дёргаем вовсе: сразу 'закрыто' + пешком.
+            Ночью (01:00–05:30) + метро + известная пара: якорный расчёт от 05:30
+            (compute_night_exit), а не мусорное ожидание и не пешие варианты.
+            Ночью без пары (избранное): 'закрыто' + пешком, как раньше.
             В серой зоне (00:30–01:00) считаем метро, но с предупреждением."""
             u = fresh()
             mode = sess.get("mode", "walk")
-            state = metro_state(datetime.now(ZoneInfo(settings.institution_tz)))
+            tz = ZoneInfo(settings.institution_tz)
+            now = datetime.now(tz)
+            state = metro_state(now)
+            if mode == "metro" and state == "closed" and sess.get("lesson") is not None:
+                lesson = sess["lesson"]
+                open_dt = datetime(lesson.starts_at.year, lesson.starts_at.month,
+                                   lesson.starts_at.day, OPEN_H, OPEN_M, tzinfo=tz)
+                out = await compute_night_exit(
+                    lesson_start=lesson.starts_at, from_xy=sess["from"], to_xy=sess["to"],
+                    buffer_min=sess.get("buffer", 10), routing=routing,
+                    open_dt=open_dt, now=now, use_cache=use_cache)
+                sess["closed"] = True
+                sess["options"] = []
+                await safe_edit(night_exit_text(u.lang, sess["lesson_line"], out),
+                                cancel_buttons(u.lang))
+                return
             sess["closed"] = state == "closed" and mode == "metro"
             try:
                 if mode == "metro" and state != "closed":
@@ -1042,6 +1177,7 @@ async def main() -> None:
                 await safe_edit(route_session_expired(fresh().lang))
                 return
             opt = sess["options"][i]
+            sess["selected"] = i
             u = fresh()
             exit_line = ""
             if sess.get("lesson") is not None:
@@ -1092,6 +1228,16 @@ async def main() -> None:
                                  (f"🚇 приедешь в {m_arr:%H:%M}." if m_arr else
                                   ("🚇 — couldn't calculate." if en else "🚇 — не посчиталось.")))
             await safe_edit("\n".join(lines))
+            return
+        if data == "rt:target":
+            sess = route_sessions.get(uid)
+            u = fresh()
+            if not sess or sess.get("lesson") is None:
+                await safe_edit(route_session_expired(u.lang))
+                return
+            pending[uid] = "target_time"
+            await safe_edit(ask_target_time(u.lang, sess["lesson_line"]),
+                            cancel_buttons(u.lang))
             return
         if data.startswith("rt:save:"):
             sess = route_sessions.get(uid)

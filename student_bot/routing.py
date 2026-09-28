@@ -181,7 +181,24 @@ def _metro_walk_ends(movements: list) -> tuple[int, int]:
     return before, after
 
 
-def parse_metro_payload(payload: Any) -> list[RouteOption]:
+def moving_seconds(opt: "RouteOption") -> int:
+    """Время в пути БЕЗ ожиданий посадок: Σ moving_duration всех участков.
+
+    Нужно для ночного расчёта (01:00–05:30): waiting ночью бессмысленно
+    (метро закрыто / данные гнилые), а езда и пешие куски — реальные.
+    Нет raw movements — возвращаем полный duration (как есть, без выдумок)."""
+    raw = opt.raw or {}
+    movements = raw.get("movements")
+    if not isinstance(movements, list) or not movements:
+        return opt.duration_s
+    total = 0
+    for m in movements:
+        if isinstance(m, dict):
+            total += int(_num(m.get("moving_duration")) or 0)
+    return total or opt.duration_s
+
+
+def parse_metro_payload(payload: Any, max_wait_s: float | None = MAX_WAIT_S) -> list[RouteOption]:
     """Сырой JSON -> варианты на метро (поля из METRO_FIELDS).
 
     Эндпоинт может вернуть пешеходный вариант (pedestrian: true) или пустоту —
@@ -189,14 +206,18 @@ def parse_metro_payload(payload: Any) -> list[RouteOption]:
     (вызывающий код кидает NoMetroError).
 
     Отдельно отбрасываем варианты с безумным ожиданием посадки
-    (waiting_duration > MAX_WAIT_S): это битые данные API, а не реальное
-    расписание — их суммирование давало "выйти в 04:42"."""
+    (waiting_duration > max_wait_s, по умолчанию MAX_WAIT_S): это битые данные
+    API, а не реальное расписание — их суммирование давало "выйти в 04:42".
+    max_wait_s=None — без фильтра (ночной расчёт: waiting игнорируется,
+    берётся только moving-сумма)."""
 
     def _wait_ok(movements: list) -> bool:
+        if max_wait_s is None:
+            return True
         for m in movements:
             if isinstance(m, dict) and m.get("type") == "passage":
                 w = _num(m.get("waiting_duration")) or 0
-                if w > MAX_WAIT_S:
+                if w > max_wait_s:
                     return False
         return True
 
@@ -231,9 +252,9 @@ def parse_metro_payload(payload: Any) -> list[RouteOption]:
                                    transfers=transfers, walk_before_s=before,
                                    walk_after_s=after, summary=summary,
                                    steps=_metro_steps(movements), raw=it))
-    if dropped_wait:
+    if dropped_wait and max_wait_s is not None:
         log.warning("2GIS metro: отброшено %d вариантов с ожиданием > %dс",
-                    dropped_wait, MAX_WAIT_S)
+                    dropped_wait, max_wait_s)
     return options
 
 
@@ -324,9 +345,12 @@ class TwoGisRouting:
         return options
 
     async def metro(self, fr: tuple[float, float], to: tuple[float, float],
-                    use_cache: bool = True) -> list[RouteOption]:
+                    use_cache: bool = True,
+                    max_wait_s: float | None = MAX_WAIT_S) -> list[RouteOption]:
+        """max_wait_s=None: без фильтра ожиданий и без кэша (ночной расчёт —
+        сырые опции нельзя класть в дневной кэш)."""
         key = cache_key(fr, to, "metro")
-        if use_cache:
+        if use_cache and max_wait_s is not None:
             hit = self._cached(key, self.metro_ttl)
             if hit is not None:
                 return hit
@@ -335,10 +359,11 @@ class TwoGisRouting:
                 "target": {"point": {"lat": tlat, "lon": tlon}},
                 "transport": ["metro"], "locale": "ru"}
         payload = await self._post(METRO_URL, body)
-        options = parse_metro_payload(payload)  # внутри: пусто/только пешком -> NoMetroError
+        options = parse_metro_payload(payload, max_wait_s=max_wait_s)
         if not options:
             raise NoMetroError("Маршрута на метро нет (пустой ответ).")
-        self._cache[key] = (time.monotonic(), options)
+        if max_wait_s is not None:
+            self._cache[key] = (time.monotonic(), options)
         return options
 
     async def close(self) -> None:

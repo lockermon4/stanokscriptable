@@ -13,19 +13,79 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from .buildings import BuildingStore
 from .config import Settings
-from .exit_time import ExitPlan, compute_exit, first_lesson_of_day, first_relevant_lesson
+from .exit_time import ExitPlan, anchor_to_open, compute_exit, first_lesson_of_day, first_relevant_lesson
 from .geocode import NominatimGeocoder
 from .models import DaySchedule
 from .normalize import normalize_day
-from .routing import NoMetroError, RouteOption, get_metro_route, get_walking_route
+from .routing import NoMetroError, RouteOption, get_metro_route, get_walking_route, moving_seconds
 from .routing_base import RouteLeg, RouteResult
 from .schedule_client import ScheduleClient
 from .store import norm_transport
+
+
+@dataclass(frozen=True)
+class NightOutcome:
+    """Итог ночного метро-расчёта (запрос в 01:00–05:30).
+
+    kind: ok — выход после открытия, обычный расчёт;
+          anchored — выход перенесён на 05:30, к паре успевает;
+          miss — даже от 05:30 не успеть (+ пеший вариант, если реален);
+          no_data — метро ночью не посчитать.
+    """
+    kind: str
+    exit_at: datetime | None = None
+    arrival_at: datetime | None = None
+    travel_s: int | None = None
+    walk_exit_at: datetime | None = None
+    walk_travel_s: int | None = None
+    walk_arrival_at: datetime | None = None
+
+
+async def compute_night_exit(
+    *,
+    lesson_start: datetime,
+    from_xy: tuple[float, float],
+    to_xy: tuple[float, float],
+    buffer_min: int,
+    routing,
+    open_dt: datetime,
+    now: datetime,
+    use_cache: bool = True,
+) -> NightOutcome:
+    """Метро ночью: езда берётся из moving-суммы (waiting ночью бессмыслен),
+    старт отсчёта — от open_dt (05:30). См. anchor_to_open."""
+    try:
+        # Ночью waiting бессмыслен (закрыто/гнильё) — берём moving-сумму,
+        # фильтр ожиданий и дневной кэш отключаем (max_wait_s=None).
+        options = await routing.metro(from_xy, to_xy, use_cache=use_cache,
+                                      max_wait_s=None)
+    except Exception:
+        return NightOutcome(kind="no_data")
+    if not options:
+        return NightOutcome(kind="no_data")
+    travel_s = moving_seconds(options[0])
+    exit_needed = lesson_start - timedelta(seconds=travel_s, minutes=buffer_min)
+    kind, exit_at, arrival_at = anchor_to_open(exit_needed, lesson_start, travel_s, open_dt)
+    if kind != "miss":
+        return NightOutcome(kind=kind, exit_at=exit_at, arrival_at=arrival_at, travel_s=travel_s)
+    walk_exit = walk_travel = walk_arr = None
+    try:
+        walk_opts = await routing.walking(from_xy, to_xy, use_cache=use_cache)
+    except Exception:
+        walk_opts = []
+    if walk_opts:
+        walk_travel = walk_opts[0].duration_s
+        cand = lesson_start - timedelta(seconds=walk_travel, minutes=buffer_min)
+        if cand >= now:
+            walk_exit, walk_arr = cand, cand + timedelta(seconds=walk_travel)
+    return NightOutcome(kind="miss", exit_at=exit_at, arrival_at=arrival_at, travel_s=travel_s,
+                        walk_exit_at=walk_exit, walk_travel_s=walk_travel,
+                        walk_arrival_at=walk_arr)
 
 
 @dataclass

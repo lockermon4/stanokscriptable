@@ -425,7 +425,103 @@ def variants_text(lang: str, lesson_line: str, options) -> str:
 
 def variants_buttons(options, lang: str):
     rows = [[(f"{i + 1}. {variant_label(o, i, lang)}", f"rtv:{i}")] for i, o in enumerate(options)]
+    rows.append([("🎯 Arrive by...", "rt:target")] if lang == EN else
+                [("🎯 Приехать к...", "rt:target")])
     rows.append([("◀️ Back", "rt:cancel")] if lang == EN else [("◀️ Назад", "rt:cancel")])
+    return ikb(rows)
+
+
+def target_buttons(lang: str):
+    return ikb([[("🎯 Arrive by...", "rt:target")]] if lang == EN else
+               [[("🎯 Приехать к...", "rt:target")]])
+
+
+def ask_target_time(lang: str, lesson_line: str) -> str:
+    if lang == EN:
+        return (f"{lesson_line}\nWhat time must you ARRIVE? Send as HH:MM, e.g. 08:00.\n"
+                f"Exit = arrival − route − buffer.")
+    return (f"{lesson_line}\nВо сколько нужно БЫТЬ на месте? Пришли время ЧЧ:ММ, например 08:00.\n"
+            f"Выход = прибытие − дорога − запас.")
+
+
+def _hm(dt) -> str:
+    return dt.strftime("%H:%M") if dt is not None else "—"
+
+
+def night_exit_text(lang: str, lesson_line: str, out) -> str:
+    """Результат ночного метро-расчёта (NightOutcome)."""
+    from .metro_hours import opens_at_text
+
+    opens = opens_at_text()
+    head = lesson_line
+    if out.kind == "no_data":
+        return f"{head}\n" + route_failed(lang)
+    if out.kind == "miss":
+        if lang == EN:
+            t = (f"{head}\n🔴 Can't make the first class by metro even leaving at {opens} "
+                 f"(metro opens at {opens}).")
+            if out.walk_exit_at is not None:
+                t += (f"\n🚶 But on foot, leaving now: exit at {_hm(out.walk_exit_at)}, "
+                      f"arrival ~{_hm(out.walk_arrival_at)}.")
+            return t
+        t = (f"{head}\n🔴 К первой паре через метро не успеть, даже выйдя в {opens} "
+             f"(метро откроется в {opens}).")
+        if out.walk_exit_at is not None:
+            t += (f"\n🚶 А вот пешком сейчас: выйти в {_hm(out.walk_exit_at)}, "
+                  f"приедешь в {_hm(out.walk_arrival_at)}.")
+        return t
+    # ok / anchored — одинаковая форма, разница лишь в якоре 05:30
+    if lang == EN:
+        return (f"{head}\n🚇 Leave at {_hm(out.exit_at)} to catch the class "
+                f"(metro opens at {opens}).")
+    return (f"{head}\n🚇 Выйти в {_hm(out.exit_at)}, чтобы успеть к первой паре "
+            f"(метро откроется в {opens}).")
+
+
+def target_exit_text(lang: str, lesson_line: str, kind: str, exit_at, arrival_at,
+                     travel_txt: str, walk_exit_at=None, walk_arrival_at=None) -> str:
+    """Результат 'Приехать к HH:MM': ok / anchored / miss / no_data."""
+    from .metro_hours import opens_at_text
+
+    opens = opens_at_text()
+    if kind == "no_data":
+        return f"{lesson_line}\n" + route_failed(lang)
+    if kind == "miss":
+        if lang == EN:
+            t = (f"{lesson_line}\n🔴 Can't arrive by metro in time (even from {opens}).")
+            if walk_exit_at is not None:
+                t += (f"\n🚶 On foot instead: exit at {_hm(walk_exit_at)}, "
+                      f"arrival ~{_hm(walk_arrival_at)}.")
+            return t
+        t = f"{lesson_line}\n🔴 На метро к этому времени не успеть (даже от {opens})."
+        if walk_exit_at is not None:
+            t += (f"\n🚶 А пешком: выйти в {_hm(walk_exit_at)}, "
+                  f"приедешь в {_hm(walk_arrival_at)}.")
+        return t
+    extra = ""
+    if kind == "anchored":
+        extra = f" (метро откроется в {opens})" if lang != EN else \
+            f" (metro opens at {opens})"
+    if lang == EN:
+        return (f"{lesson_line}\n🚇 To arrive by {_hm(arrival_at)}: "
+                f"leave at {_hm(exit_at)} ({travel_txt}).{extra}")
+    return (f"{lesson_line}\n🚇 Чтобы быть к {_hm(arrival_at)}: "
+            f"выйти в {_hm(exit_at)} ({travel_txt}).{extra}")
+
+
+def addr_confirm_buttons(lang: str):
+    if lang == EN:
+        return ikb([[("✅ Yes, my home", "addr:yes"), ("❌ Not mine", "addr:no")]])
+    return ikb([[("✅ Да, мой дом", "addr:yes"), ("❌ Не мой", "addr:no")]])
+
+
+def addr_pick_buttons(picks, lang: str):
+    """Пронумерованные кнопки вместо ответа цифрой текстом."""
+    rows = []
+    for i, (lbl, _, _) in enumerate(picks):
+        short = lbl if len(lbl) <= 32 else lbl[:31] + "…"
+        rows.append([(f"{i + 1}. {short}", f"addrpick:{i}")])
+    rows.append([("◀️ Back", "op:cancel")] if lang == EN else [("◀️ Назад", "op:cancel")])
     return ikb(rows)
 
 
