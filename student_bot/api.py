@@ -372,7 +372,8 @@ async def today_payload(ctx: ApiCtx, u: UserSettings, now: datetime | None = Non
     weather = None
     if u.home_lat is not None and u.home_lon is not None:
         at = view.plan.exit_at if view.plan else now.replace(hour=8, minute=0)
-        w = await get_weather(u.home_lat, u.home_lon, at)
+        w = await get_weather(u.home_lat, u.home_lon, at,
+                              api_key=ctx.settings.weatherapi_key)
         if w is not None:
             weather = {"temp_c": w.temp_c, "precip_prob": w.precip_prob,
                        "summary": weather_line(lang, w.temp_c, w.precip_prob, w.kind),

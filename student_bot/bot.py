@@ -249,7 +249,8 @@ async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict,
                         text += "\n" + metro_closed(u.lang)
                     # Погода на время выхода (дом сохранён — иначе пропускаем молча).
                     if u.home_lat is not None and u.home_lon is not None:
-                        w = await get_weather(u.home_lat, u.home_lon, view.plan.exit_at)
+                        w = await get_weather(u.home_lat, u.home_lon, view.plan.exit_at,
+                                              api_key=settings.weatherapi_key)
                         if w is not None:
                             text += "\n" + weather_line(u.lang, w.temp_c, w.precip_prob, w.kind)
                     await bot.send_message(u.user_id, text)

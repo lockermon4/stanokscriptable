@@ -11,6 +11,8 @@ services:
         sync: false # заполнить в Render Dashboard (секрет)
       - key: GIS_API_KEY
         sync: false # 2GIS Routing API: пешком + метро (секрет)
+      - key: WEATHERAPI_KEY
+        sync: false # WeatherAPI.com: погода (секрет; без него weather: null)
       - key: PUBLIC_BASE_URL
         value: https://stankin-schedule-bot.onrender.com # поправь под свой URL
       - key: LOG_LEVEL
