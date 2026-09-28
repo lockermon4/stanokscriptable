@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from .buildings import BuildingStore
@@ -22,6 +23,7 @@ from .exit_time import ExitPlan, anchor_to_open, compute_exit, first_lesson_of_d
 from .geocode import NominatimGeocoder
 from .models import DaySchedule
 from .normalize import normalize_day
+from .places import PlacesError
 from .routing import NoMetroError, RouteOption, get_metro_route, get_walking_route, moving_seconds
 from .routing_base import RouteLeg, RouteResult
 from .schedule_client import ScheduleClient
@@ -86,6 +88,72 @@ async def compute_night_exit(
     return NightOutcome(kind="miss", exit_at=exit_at, arrival_at=arrival_at, travel_s=travel_s,
                         walk_exit_at=walk_exit, walk_travel_s=walk_travel,
                         walk_arrival_at=walk_arr)
+
+
+@dataclass(frozen=True)
+class Window:
+    """Окно между парами: from/to — 'HH:MM', minutes — длительность,
+    from_room — кабинет пары ПЕРЕД окном (место ищем рядом с её корпусом)."""
+    from_time: str
+    to_time: str
+    minutes: int
+    from_room: str
+    lesson: Any = None  # Lesson ПЕРЕД окном (для резолва корпуса)
+
+
+def find_windows(schedule: DaySchedule, min_gap_min: int = 45) -> list[Window]:
+    """Чистая функция: разрывы end->start следующей пары >= порога."""
+    out: list[Window] = []
+    lessons = list(schedule.active_lessons)
+    for prev, nxt in zip(lessons, lessons[1:]):
+        prev_end = prev.ends_at or (prev.starts_at + timedelta(minutes=90))
+        gap = int((nxt.starts_at - prev_end).total_seconds() // 60)
+        if gap >= min_gap_min:
+            out.append(Window(from_time=prev_end.strftime("%H:%M"),
+                              to_time=nxt.starts_at.strftime("%H:%M"),
+                              minutes=gap, from_room=prev.room or "",
+                              lesson=prev))
+    return out
+
+
+def _place_json(p) -> dict:
+    return {"name": p.name, "category": p.category,
+            "walk_min": p.walk_min, "address": p.address}
+
+
+async def windows_with_places(schedule: DaySchedule, buildings: BuildingStore,
+                              places_client, router,
+                              min_gap_min: int = 45) -> list[dict]:
+    """Окна + места рядом с корпусом пары ПЕРЕД окном.
+    Поиск упал/ничего нет/корпус неизвестен -> places=[], место null у потребителя.
+    Кэш 24 ч живёт внутри places_client."""
+    out: list[dict] = []
+    for w in find_windows(schedule, min_gap_min):
+        lat = lon = None
+        les = w.lesson
+        if les is not None:
+            b = buildings.lookup(les.building_code) if les.building_code else None
+            if b is None:
+                b, _heur = buildings.resolve_cabinet(les.room)
+            if b is not None and b.lat is not None and b.lon is not None:
+                lat, lon = b.lat, b.lon
+        places: list = []
+        if lat is not None and places_client is not None:
+            try:
+                found = await places_client.search(lat, lon)
+                try:
+                    await places_client.attach_walk_times(found, (lat, lon), router, limit=4)
+                except Exception:
+                    pass
+                places = [_place_json(p) for p in found[:4]]
+            except PlacesError:
+                places = []
+            except Exception:
+                places = []
+        out.append({"from": w.from_time, "to": w.to_time, "minutes": w.minutes,
+                    "building": ({"lat": lat, "lon": lon} if lat is not None else None),
+                    "places": places})
+    return out
 
 
 @dataclass

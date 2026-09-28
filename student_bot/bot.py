@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import (CallbackQuery, KeyboardButton,
+from aiogram.types import (CallbackQuery, InlineKeyboardMarkup, KeyboardButton,
                            Message, ReplyKeyboardMarkup)
 
 from .address_check import verify_address_text
@@ -28,10 +28,12 @@ from .metro_hours import OPEN_H, OPEN_M, metro_state
 from .normalize import normalize_day, normalize_groups
 from .notifications import morning_notify_time, parse_hhmm
 from .routing import NoMetroError, RoutingError, TwoGisRouting
+from .places import TwoGisPlaces
 from .schedule_client import ScheduleClient
 from .health import start_health_server, stop_health_server
 from .sendlog import SendLogMiddleware, install_send_logging, setup_logging
 from .service import LessonTargetError, build_day_view, compute_night_exit, lesson_target
+from .service import windows_with_places
 from .store import Store, UserSettings, fmt_coords, norm_transport, parse_coords
 from .weather import get_weather
 from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMORROW,
@@ -51,7 +53,8 @@ from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMO
                      start_back, start_need_group, start_need_home, start_new, start_route,
                      transport_buttons, transport_name, variants_buttons, variants_text,
                      target_buttons, target_exit_text, ask_target_time, addr_confirm_buttons,
-                     addr_pick_buttons, weather_line)
+                     addr_pick_buttons, weather_line, window_line, places_buttons,
+                     places_alternatives_text, ikb)
 from .address_check import format_confirm, match_candidate, parse_address
 
 
@@ -268,12 +271,14 @@ async def main() -> None:
     sched_client = ScheduleClient(settings)
     geocoder = NominatimGeocoder(settings)
     routing = TwoGisRouting()  # ключ из $GIS_API_KEY; только пешком и метро
+    places_client = TwoGisPlaces()  # тот же ключ; кофейни/столовые рядом, кэш 24 ч
     deps = {"schedule_client": sched_client, "buildings": buildings, "geocoder": geocoder,
             "routing": routing}
     last_calc: dict[int, float] = {}  # scheduler throttle, kept OUT of deps (see above)
     addr_picks: dict[int, list[tuple[str, float, float]]] = {}  # uid -> [(label, lat, lon)]
     note_tmp: dict[int, dict] = {}  # uid -> {"op": add/view/del, "date": iso}
     route_sessions: dict[int, dict] = {}  # uid -> {from,to,label,lesson,buffer,mode,options}
+    place_windows: dict[int, list] = {}  # uid -> rich-окна для кнопки plc:<i>
 
     def routing_changed(uid: int) -> None:
         """Address/group/transport/buffer changed: drop everything computed
@@ -465,6 +470,31 @@ async def main() -> None:
                                             transport=u.transport, buffer_min=u.buffer_min,
                                             for_today=for_today, **deps, settings=settings)
             note = store.get_note(m.from_user.id, day.isoformat())
+
+            async def with_windows(text, markup):
+                """Окна + места к сообщению дня; окна запоминаем для plc:<i>.
+                Общий лимит 30 с: при деградации 2GIS шлём расписание без окон,
+                а не заставляем ждать."""
+                try:
+                    rich = await asyncio.wait_for(
+                        windows_with_places(view.schedule, buildings, places_client,
+                                            routing, settings.window_min_gap_min),
+                        timeout=30)
+                except Exception:
+                    return text, markup
+                place_windows[m.from_user.id] = rich
+                if not rich:
+                    return text, markup
+                lines = [window_line(lang, w["minutes"],
+                                     (w["places"][0] if w["places"] else None)) for w in rich]
+                text = text + "\n" + "\n".join(lines)
+                rows = []
+                if isinstance(markup, InlineKeyboardMarkup):
+                    rows = [[(b.text, b.callback_data or "") for b in row]
+                            for row in markup.inline_keyboard]
+                rows += [[(b.text, b.callback_data or "") for b in row]
+                         for row in places_buttons(rich, lang).inline_keyboard]
+                return text, ikb(rows)
             if action == "leave":
                 # Шаг 1: пара + точка назначения; тип маршрута выбирает пользователь.
                 tgt = await lesson_target(settings=settings,
@@ -501,7 +531,8 @@ async def main() -> None:
                         done = "🌅 No more classes today." if lang == "en" else \
                             "🌅 Все пары на сегодня закончились."
                         tail = f"\n🎒 {note}" if note else ""
-                        await m.answer(f"{done}\n\n{day_list}{tail}", reply_markup=kb)
+                        text, kb_out = await with_windows(f"{done}\n\n{day_list}{tail}", kb)
+                        await m.answer(text, reply_markup=kb_out)
                     else:
                         lesson = view.target
                         next_lesson = None
@@ -542,7 +573,8 @@ async def main() -> None:
                                     "mode": norm_transport(u.transport),
                                     "options": [], "fallback": False}
                                 markup = leave_now_buttons(lang)
-                        await m.answer(f"{focus_text}\n\n{day_list}{tail}", reply_markup=markup)
+                        text, markup = await with_windows(f"{focus_text}\n\n{day_list}{tail}", markup)
+                        await m.answer(text, reply_markup=markup)
                 else:
                     label = ("Today" if action == "today" else "Tomorrow") if lang == "en" else \
                         ("Сегодня" if action == "today" else "Завтра")
@@ -569,9 +601,11 @@ async def main() -> None:
                                     "mode": norm_transport(u.transport),
                                     "options": [], "fallback": False}
                                 t_markup = target_buttons(lang)
-                    await m.answer(format_telegram_day(f"{label}, {day.strftime('%d.%m')}", card,
-                                                       day_exit_line(view, lang) if view.target else "",
-                                                       lang), reply_markup=t_markup)
+                    text = format_telegram_day(f"{label}, {day.strftime('%d.%m')}", card,
+                                               day_exit_line(view, lang) if view.target else "",
+                                               lang)
+                    text, t_markup = await with_windows(text, t_markup)
+                    await m.answer(text, reply_markup=t_markup)
             return
         if action == "notes":
             await m.answer(notes_menu_text(lang), reply_markup=notes_menu_buttons(lang))
@@ -1056,6 +1090,26 @@ async def main() -> None:
             pending[uid] = "note_add_custom"
             await safe_edit(ask_custom_date(fresh().lang), cancel_buttons(fresh().lang))
             return
+        if data.startswith("plc:"):
+            # "📍 Другие места рядом": альтернативы из запомненных окон.
+            try:
+                i = int(data[4:])
+            except ValueError:
+                return
+            u = fresh()
+            wins = place_windows.get(uid, [])
+            if not (0 <= i < len(wins)):
+                await cb.message.answer("Откройте день заново: список мест устарел." if u.lang != "en"
+                                        else "Reopen the day: places list expired.")
+                return
+            w = wins[i]
+            first = w["places"][0] if w["places"] else {}
+            shown = first.get("name")
+            alts = [p for p in w["places"][1:4]
+                    if p.get("name") != shown]
+            await cb.message.answer(places_alternatives_text(
+                u.lang, {"from": w["from"], "to": w["to"]}, alts))
+            return
         if data == "note:view":
             u = fresh()
             await safe_edit(ask_note_date(u.lang), note_date_buttons(u.lang, "nview"))
@@ -1335,7 +1389,8 @@ async def main() -> None:
     from .api import ApiCtx
 
     api_ctx = ApiCtx(settings=settings, store=store, schedule_client=sched_client,
-                     buildings=buildings, geocoder=geocoder, routing=routing)
+                     buildings=buildings, geocoder=geocoder, routing=routing,
+                     places=places_client)
     health_runner = await start_health_server(ctx=api_ctx)
     sched_task = asyncio.create_task(scheduler_loop(bot, settings, store, deps, last_calc))
     watch_task = asyncio.create_task(watch_loop(bot, settings, store, deps))
@@ -1349,7 +1404,7 @@ async def main() -> None:
             store.close()
         except Exception:
             pass
-        for c in (sched_client, geocoder, routing):
+        for c in (sched_client, geocoder, routing, places_client):
             try:
                 if hasattr(c, "close"):
                     await c.close()

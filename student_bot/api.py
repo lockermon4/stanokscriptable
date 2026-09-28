@@ -18,6 +18,7 @@ API-слой обслуживает каждый вызов (Scriptable дёрг
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -47,6 +48,7 @@ class ApiCtx:
     buildings: Any
     geocoder: Any
     routing: Any
+    places: Any = None  # TwoGisPlaces; None -> окна без мест (place=null)
 
 
 def _now(ctx: ApiCtx, now: datetime | None = None) -> datetime:
@@ -307,6 +309,26 @@ def parse_target_or_400(target_raw: str | None, day: Any, tz) -> tuple[datetime 
     return dt, None
 
 
+async def _windows_json(ctx: ApiCtx, view, u) -> list[dict]:
+    """Окна + первое место (place=null, если поиск упал/пуст/корпус неизвестен).
+    Общий лимит 30 с, дальше — пустой список, а не висящий запрос."""
+    from .service import windows_with_places
+
+    try:
+        rich = await asyncio.wait_for(
+            windows_with_places(view.schedule, ctx.buildings, ctx.places,
+                                ctx.routing, ctx.settings.window_min_gap_min),
+            timeout=30)
+    except Exception:
+        return []
+    out = []
+    for w in rich:
+        places = w.get("places") or []
+        out.append({"from": w["from"], "to": w["to"], "minutes": w["minutes"],
+                    "place": places[0] if places else None})
+    return out
+
+
 async def today_payload(ctx: ApiCtx, u: UserSettings, now: datetime | None = None,
                       target: str | None = None) -> dict:
     now = _now(ctx, now)
@@ -360,6 +382,7 @@ async def today_payload(ctx: ApiCtx, u: UserSettings, now: datetime | None = Non
             "metro_open": metro_open_info(now), "target": t_block,
             "changes": ctx.store.get_changes(u.group, day.isoformat()),
             "weather": weather,
+            "windows": await _windows_json(ctx, view, u),
             "push": _push_json(format_push_morning(d, "a", lang))}
 
 
@@ -401,6 +424,7 @@ async def tomorrow_payload(ctx: ApiCtx, u: UserSettings, now: datetime | None = 
     return {"status": "ok", "kind": "tomorrow", "date": day.isoformat(), "group": u.group,
             "lessons": lessons, "note": note, "target": t_block,
             "changes": ctx.store.get_changes(u.group, day.isoformat()),
+            "windows": await _windows_json(ctx, view, u),
             "push": _push_json(format_push_evening(d, "a", lang))}
 
 

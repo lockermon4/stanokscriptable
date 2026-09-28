@@ -56,6 +56,7 @@ class Settings:
     groups_cache_file: str = "data/groups_cache.json"
     groups_cache_ttl_h: int = 168  # 7 days
     schedule_day_ttl_s: int = 900  # in-memory TTL for day/range schedule JSON (15 min)
+    window_min_gap_min: int = 45  # разрыв между парами, считающийся "окном"
     database_path: str = "bot_data.sqlite3"
     database_url: str = ""  # postgres (Supabase): если задан — используется вместо sqlite-файла
     gis_api_key: str = ""  # 2GIS Routing API ($GIS_API_KEY)
@@ -86,6 +87,7 @@ class Settings:
             groups_cache_file=_get("GROUPS_CACHE_FILE", "data/groups_cache.json"),
             groups_cache_ttl_h=int(_get("GROUPS_CACHE_TTL_H", "168") or 168),
             schedule_day_ttl_s=int(_get("SCHEDULE_DAY_TTL_S", "900") or 900),
+            window_min_gap_min=int(_get("WINDOW_MIN_GAP_MIN", "45") or 45),
             database_path=_get("DATABASE_PATH", "bot_data.sqlite3"),
             database_url=_get("DATABASE_URL", ""),
             gis_api_key=_get("GIS_API_KEY"),

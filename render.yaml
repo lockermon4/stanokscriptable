@@ -43,6 +43,8 @@ services:
         value: "%Y-%m-%d"
       - key: SCHEDULE_DAY_TTL_S
         value: 900
+      - key: WINDOW_MIN_GAP_MIN
+        value: 45
       - key: GROUPS_JSON_URL
         sync: false # опционально: зеркало списка групп
       - key: GROUPS_CACHE_FILE

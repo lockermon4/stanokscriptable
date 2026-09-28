@@ -735,3 +735,45 @@ def weather_line(lang: str, temp_c: float, precip_prob: int, kind: str) -> str:
     icon = "🌧" if precip_prob >= 50 else "⛅"
     tail = ": возьми зонт" if precip_prob >= 50 else ""
     return f"{icon} {t}, {rain_word} {precip_prob}%{tail}"
+
+
+def window_line(lang: str, minutes: int, place: dict | None) -> str:
+    """'⏳ окно 1 ч 25 мин · ☕ Название, 3 мин пешком' (place=None -> без места)."""
+    from .exit_time import format_duration
+
+    dur = format_duration(minutes)
+    head = f"⏳ {dur} window" if lang == EN else f"⏳ окно {dur}"
+    if not place:
+        return head
+    icon = {"кофейня": "☕", "кафе": "☕", "столовая": "🍽", "магазин": "🛒"}.get(
+        (place.get("category") or "").lower(), "📍")
+    walk = place.get("walk_min")
+    walk_txt = (f", {walk} min on foot" if lang == EN else f", {walk} мин пешком") \
+        if walk is not None else ""
+    return f"{head} · {icon} {place.get('name', '')}{walk_txt}"
+
+
+def places_buttons(windows: list, lang: str):
+    """Кнопка '📍 Другие места рядом' под каждое окно: plc:<индекс>."""
+    rows = []
+    for i, w in enumerate(windows):
+        label = f"📍 More nearby ({w['from']}–{w['to']})" if lang == EN else \
+            f"📍 Другие места рядом ({w['from']}–{w['to']})"
+        rows.append([(label, f"plc:{i}")])
+    return ikb(rows)
+
+
+def places_alternatives_text(lang: str, window: dict, alternatives: list) -> str:
+    """2–3 альтернативы (первое показанное место пропускаем)."""
+    head = f"📍 Nearby {window['from']}–{window['to']}:" if lang == EN else \
+        f"📍 Рядом {window['from']}–{window['to']}:"
+    if not alternatives:
+        return head + ("\nNothing else found." if lang == EN else "\nБольше ничего нет.")
+    lines = [head]
+    for p in alternatives[:3]:
+        walk = p.get("walk_min")
+        walk_txt = (f" — {walk} min on foot" if lang == EN else f" — {walk} мин пешком") \
+            if walk is not None else ""
+        addr = f" ({p.get('address')})" if p.get("address") else ""
+        lines.append(f"• {p.get('name', '')}{addr}{walk_txt}")
+    return "\n".join(lines)
