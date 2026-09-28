@@ -2,8 +2,14 @@
 
 Берём почасовой прогноз на время выхода (или на 08:00, если выход не посчитан):
 температура, вероятность и тип осадков. Порог зонта: >= 50%.
-Кэш 30 мин по округлённым координатам. Таймаут короткий; при любой ошибке —
-None, утреннее уходит как обычно. Цифры из воздуха не берём.
+Единицы и таймзона заданы явно (temperature_unit=celsius,
+timezone=Europe/Moscow) — на дефолты API не полагаемся.
+Часы hourly-массива — wall time заявленной таймзоны (проверяем по
+utc_offset_seconds из ответа), `when` приводим к ней же: UTC/наивное `when`
+больше не сдвигает выбор на часы. Кэш 30 мин по округлённым координатам
+хранит сырой почасовой ответ, час выбирается при каждом вызове.
+Таймаут короткий; при любой ошибке — None, утреннее уходит как обычно.
+Цифры из воздуха не берём.
 """
 from __future__ import annotations
 
@@ -11,13 +17,16 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 
 log = logging.getLogger("bot.weather")
 
 BASE = "https://api.open-meteo.com/v1/forecast"
+TZ_NAME = "Europe/Moscow"
+MSK = ZoneInfo(TZ_NAME)
 TTL_S = 30 * 60
 
 # WMO weathercode -> тип осадков (стандартная таблица WMO, не выдумано).
@@ -33,7 +42,7 @@ class Weather:
     umbrella: bool
 
 
-_cache: dict[tuple[float, float], tuple[float, Weather | None]] = {}
+_cache: dict[tuple[float, float], tuple[float, dict]] = {}
 
 
 def _key(lat: float, lon: float) -> tuple[float, float]:
@@ -48,9 +57,20 @@ def _kind_of(code: int | None, prob: int) -> str:
     return "none" if prob < 20 else "rain"
 
 
-async def get_weather(lat: float, lon: float, when: datetime,
-                      http: httpx.AsyncClient | None = None) -> Weather | None:
-    """Прогноз на час, ближайший к `when`. None = данных нет (молча пропускаем)."""
+def _response_tz(offset) -> timezone | ZoneInfo:
+    """Таймзона часов hourly: из utc_offset_seconds ответа, иначе MSK."""
+    off = offset
+    if isinstance(off, bool):
+        off = None
+    if isinstance(off, (int, float)):
+        return timezone(timedelta(seconds=int(off)))
+    return MSK
+
+
+async def _fetch_hourly(lat: float, lon: float,
+                        http: httpx.AsyncClient | None = None) -> dict:
+    """Сырой почасовой ответ (кэш 30 мин по координатам). Сырой ответ пишем
+    в debug-лог — по нему сверяем выбор часа с улицей."""
     key = _key(lat, lon)
     hit = _cache.get(key)
     if hit and time.monotonic() - hit[0] < TTL_S:
@@ -61,44 +81,70 @@ async def get_weather(lat: float, lon: float, when: datetime,
         r = await client.get(BASE, params={
             "latitude": lat, "longitude": lon,
             "hourly": "temperature_2m,precipitation_probability,weathercode",
-            "timezone": "Europe/Moscow", "forecast_days": 3})
+            "temperature_unit": "celsius", "timezone": TZ_NAME, "forecast_days": 3})
         r.raise_for_status()
-        hourly = r.json().get("hourly", {})
-        times = hourly.get("time", [])
-        if not times:
+        data = r.json()
+        if not isinstance(data, dict):
+            raise ValueError("not a JSON object")
+        hourly = data.get("hourly") or {}
+        times = hourly.get("time") or []
+        temps = hourly.get("temperature_2m") or []
+        if not times or not temps:
             raise ValueError("empty hourly")
-        # ближайший час к `when` (парсим явно для надёжности)
-        best, best_dt = 0, None
-        for i, ts in enumerate(times):
-            try:
-                cur = datetime.strptime(ts, "%Y-%m-%dT%H:%M")
-            except ValueError:
-                continue
-            cur = cur.replace(tzinfo=when.tzinfo)
-            if best_dt is None or abs((cur - when).total_seconds()) < abs((best_dt - when).total_seconds()):
-                best, best_dt = i, cur
-        temps = hourly.get("temperature_2m", [])
-        probs = hourly.get("precipitation_probability", [])
-        codes = hourly.get("weathercode", [])
-        if not temps or best >= len(temps):
-            raise ValueError("no temp")
-        prob = int(probs[best]) if best < len(probs) and probs[best] is not None else 0
-        code = int(codes[best]) if best < len(codes) and codes[best] is not None else None
-        kind = _kind_of(code, prob)
-        w = Weather(temp_c=float(temps[best]), precip_prob=prob, kind=kind,
-                    umbrella=prob >= 50)
-        _cache[key] = (time.monotonic(), w)
-        return w
-    except Exception as e:
-        log.warning("weather skipped: %s", e)
-        _cache[key] = (time.monotonic(), None)
-        return None
+        log.debug("open-meteo raw lat=%.2f lon=%.2f offset=%s units=%s slots=%d first=%s",
+                  lat, lon, data.get("utc_offset_seconds"),
+                  (data.get("hourly_units") or {}).get("temperature_2m"),
+                  len(times), times[0])
+        payload = {"offset": data.get("utc_offset_seconds"),
+                   "times": list(times), "temps": list(temps),
+                   "probs": list(hourly.get("precipitation_probability") or []),
+                   "codes": list(hourly.get("weathercode") or [])}
+        _cache[key] = (time.monotonic(), payload)
+        return payload
     finally:
         if own:
             try:
                 await client.aclose()
             except Exception:
                 pass
+
+
+def _select(payload: dict, when: datetime) -> Weather:
+    """Час, ближайший к `when`. Часы — wall time таймзоны ответа;
+    наивное `when` считаем временем той же зоны."""
+    tz = _response_tz(payload.get("offset"))
+    target = when if when.tzinfo is not None else when.replace(tzinfo=tz)
+    target = target.astimezone(tz)
+    best, best_dt = -1, None
+    for i, ts in enumerate(payload["times"]):
+        try:
+            cur = datetime.strptime(ts, "%Y-%m-%dT%H:%M").replace(tzinfo=tz)
+        except (ValueError, TypeError):
+            continue
+        if best_dt is None or abs((cur - target).total_seconds()) < abs((best_dt - target).total_seconds()):
+            best, best_dt = i, cur
+    if best < 0 or best >= len(payload["temps"]):
+        raise ValueError("no parseable hour")
+    temps, probs, codes = payload["temps"], payload["probs"], payload["codes"]
+    prob = int(probs[best]) if best < len(probs) and probs[best] is not None else 0
+    code = int(codes[best]) if best < len(codes) and codes[best] is not None else None
+    kind = _kind_of(code, prob)
+    w = Weather(temp_c=float(temps[best]), precip_prob=prob, kind=kind,
+                umbrella=prob >= 50)
+    log.info("weather slot=%s temp=%.1f°C prob=%d%% kind=%s (target=%s)",
+             payload["times"][best], w.temp_c, prob, kind,
+             target.strftime("%Y-%m-%dT%H:%M%z"))
+    return w
+
+
+async def get_weather(lat: float, lon: float, when: datetime,
+                      http: httpx.AsyncClient | None = None) -> Weather | None:
+    """Прогноз на час, ближайший к `when`. None = данных нет (молча пропускаем)."""
+    try:
+        return _select(await _fetch_hourly(lat, lon, http), when)
+    except Exception as e:
+        log.warning("weather skipped: %s", e)
+        return None
 
 
 def drop_cache() -> None:
