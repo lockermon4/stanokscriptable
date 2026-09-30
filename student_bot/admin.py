@@ -158,10 +158,16 @@ stats();
 
 async def index(request: web.Request) -> web.Response:
     if not _token(_ctx(request)):
+        log.warning("admin hit but ADMIN_TOKEN not set — panel disabled")
         _deny()
     if not _authed(request):
         return web.Response(text=_LOGIN_HTML, content_type="text/html")
     return web.Response(text=DASH_HTML, content_type="text/html")
+
+
+async def index_noslash(request: web.Request) -> web.Response:
+    """/admin без слэша — редирект, а не 404 (авторизация всё равно на /admin/)."""
+    raise web.HTTPFound("/admin/")
 
 
 async def login(request: web.Request) -> web.Response:
@@ -267,6 +273,7 @@ async def broadcast(request: web.Request) -> web.Response:
 def register_admin(app: web.Application) -> None:
     """Подключить /admin/* к приложению (только когда есть ctx)."""
     install_log_buffer()
+    app.router.add_get("/admin", index_noslash)
     app.router.add_get("/admin/", index)
     app.router.add_post("/admin/login", login)
     app.router.add_post("/admin/logout", logout)

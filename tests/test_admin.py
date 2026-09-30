@@ -102,6 +102,17 @@ def _run_case(ctx, fn):
     return run(_serve(ctx)(fn))
 
 
+def test_noslash_redirects_to_dashboard():
+    ctx, _ = _ctx()
+    def fn(port):
+        c = Client(port)
+        c.login(TOKEN)
+        # urllib следует 302: в итоге дашборд 200 (а не голый 404)
+        status, body = c.get("/admin")
+        assert status == 200 and "Рассылка" in body
+    _run_case(ctx, fn)
+
+
 def test_no_token_configured_everything_404():
     ctx, _ = _ctx(token="")
     def fn(port):
