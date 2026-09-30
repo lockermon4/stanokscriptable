@@ -1391,7 +1391,7 @@ async def main() -> None:
 
     api_ctx = ApiCtx(settings=settings, store=store, schedule_client=sched_client,
                      buildings=buildings, geocoder=geocoder, routing=routing,
-                     places=places_client)
+                     places=places_client, bot=bot)
     health_runner = await start_health_server(ctx=api_ctx)
     sched_task = asyncio.create_task(scheduler_loop(bot, settings, store, deps, last_calc))
     watch_task = asyncio.create_task(watch_loop(bot, settings, store, deps))

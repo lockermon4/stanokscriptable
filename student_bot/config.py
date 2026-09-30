@@ -61,6 +61,7 @@ class Settings:
     database_url: str = ""  # postgres (Supabase): если задан — используется вместо sqlite-файла
     gis_api_key: str = ""  # 2GIS Routing API ($GIS_API_KEY)
     weatherapi_key: str = ""  # WeatherAPI.com ($WEATHERAPI_KEY); пусто — погода пропускается
+    admin_token: str = ""  # Админ-панель /admin ($ADMIN_TOKEN); пусто — панель отключена
     public_base_url: str = ""  # https://<сервис>.onrender.com — для ссылки iOS-ключа
     default_buffer_min: int = 10
     default_evening_time: str = "21:00"
@@ -93,6 +94,7 @@ class Settings:
             database_url=_get("DATABASE_URL", ""),
             gis_api_key=_get("GIS_API_KEY"),
             weatherapi_key=_get("WEATHERAPI_KEY"),
+            admin_token=_get("ADMIN_TOKEN"),
             public_base_url=_get("PUBLIC_BASE_URL", "").rstrip("/"),
             default_buffer_min=int(_get("DEFAULT_BUFFER_MIN", "10") or 10),
             default_evening_time=_get("DEFAULT_EVENING_TIME", "21:00"),

@@ -49,6 +49,7 @@ class ApiCtx:
     geocoder: Any
     routing: Any
     places: Any = None  # TwoGisPlaces; None -> окна без мест (place=null)
+    bot: Any = None  # aiogram Bot; нужен админке для рассылок
 
 
 def _now(ctx: ApiCtx, now: datetime | None = None) -> datetime:

@@ -29,12 +29,14 @@ def build_app(ctx: Any = None) -> web.Application:
     app.router.add_get("/health", health)
     app.router.add_get("/", health)
     if ctx is not None:
+        from .admin import register_admin
         from .api import exit_time_handler, today_handler, tomorrow_handler
 
         app[API_CTX_KEY] = ctx
         app.router.add_get("/api/v1/today", today_handler)
         app.router.add_get("/api/v1/tomorrow", tomorrow_handler)
         app.router.add_get("/api/v1/exit-time", exit_time_handler)
+        register_admin(app)  # /admin/* (без ADMIN_TOKEN — все 404)
     return app
 
 
