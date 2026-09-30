@@ -16,7 +16,7 @@ services:
       - key: ADMIN_TOKEN
         sync: false # Админ-панель /admin (секрет владельца; без него панель 404)
       - key: PUBLIC_BASE_URL
-        value: https://stankin-schedule-bot.onrender.com # поправь под свой URL
+        value: https://stanokscriptable.onrender.com # прод-домен Render
       - key: LOG_LEVEL
         value: INFO
       - key: INSTITUTION_TZ
