@@ -7,7 +7,10 @@
 (проверяем, что это Europe/Moscow; иначе берём зону из ответа как есть),
 `when` приводим к ней же: UTC/наивное `when` выбор не сдвигает.
 Температура — temp_c как есть, без конвертации (проверено живьём:
-hourly temp_c совпадает с current.temp_c).
+hourly temp_c совпадает с current.temp_c). Если запрошенное время уже
+прошло (вечером виджет ссылается на утренний exit_at), берём fact из
+current.temp_c, а не устаревший почасовой слот: прогноз на прошедший
+час — это утро, а не «сейчас на улице».
 Вероятность — max(chance_of_rain, chance_of_snow); тип — по
 will_it_rain/will_it_snow, шансам и condition.text.
 Кэш 30 мин по округлённым координатам хранит сырой почасовой ответ,
@@ -113,11 +116,13 @@ async def _fetch_hours(lat: float, lon: float, api_key: str | None,
                         hours.append(h)
         if not hours:
             raise WeatherError("empty hourly")
-        log.debug("weatherapi raw lat=%.2f lon=%.2f tz=%s localtime=%s days=%d hours=%d first=%s",
+        current = data.get("current") if isinstance(data.get("current"), dict) else None
+        log.debug("weatherapi raw lat=%.2f lon=%.2f tz=%s localtime=%s days=%d hours=%d first=%s current=%s",
                   lat, lon, tz_id, loc.get("localtime"),
                   len((data.get("forecast") or {}).get("forecastday") or []),
-                  len(hours), hours[0].get("time"))
-        payload = {"tz_id": tz_id, "hours": hours}
+                  len(hours), hours[0].get("time"),
+                  current and current.get("temp_c"))
+        payload = {"tz_id": tz_id, "hours": hours, "current": current}
         _cache[key] = (time.monotonic(), payload)
         return payload
     finally:
@@ -150,10 +155,17 @@ def _select(payload: dict, when: datetime) -> Weather:
     h = payload["hours"][best]
     prob = max(_int(h.get("chance_of_rain")), _int(h.get("chance_of_snow")))
     kind = _kind_of(h, prob)
-    w = Weather(temp_c=float(h["temp_c"]), precip_prob=prob, kind=kind,
+    temp_c = float(h["temp_c"])
+    src = "hourly"
+    cur = payload.get("current")
+    if target <= datetime.now(tz) and isinstance(cur, dict) and cur.get("temp_c") is not None:
+        # время уже прошло — показываем факт, а не прогноз утреннего слота
+        temp_c = float(cur["temp_c"])
+        src = "current"
+    w = Weather(temp_c=temp_c, precip_prob=prob, kind=kind,
                 umbrella=prob >= 50)
-    log.info("weather slot=%s temp=%.1f°C prob=%d%% kind=%s (target=%s)",
-             h["time"], w.temp_c, prob, kind,
+    log.info("weather slot=%s temp=%.1f°C prob=%d%% kind=%s src=%s (target=%s)",
+             h["time"], w.temp_c, prob, kind, src,
              target.strftime("%Y-%m-%dT%H:%M%z"))
     return w
 
