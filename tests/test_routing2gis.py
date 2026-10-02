@@ -42,7 +42,7 @@ def test_no_key_refuses():
 
 def test_parsers_real_schema():
     from student_bot.routing import parse_metro_payload, parse_walk_payload
-    # Реальная форма walk (живой ответ 2026-09-26): числа + ui_*-тексты.
+    # Форма walk: числа (метры/секунды) + ui_*-тексты.
     walk = {"message": None, "result": [{
         "algorithm": "по основным улицам",
         "total_distance": 20097, "total_duration": 16077,
@@ -52,7 +52,7 @@ def test_parsers_real_schema():
     w = parse_walk_payload(walk)
     assert len(w) == 1 and w[0].duration_s == 16077 and w[0].distance_m == 20097
     assert w[0].summary == "4 часа 27 мин, 20 км (по основным улицам)"
-    assert w[0].steps == ()  # только start/finish — честно пусто
+    assert w[0].steps == ()  # maneuvers = start/finish -> шагов нет
     assert parse_walk_payload({"result": []}) == []
     assert parse_walk_payload({}) == []
 
@@ -305,11 +305,11 @@ def _metro_item(wait_s):
 def test_insane_waiting_filtered_out():
     from student_bot.routing import MAX_WAIT_S, parse_metro_payload
     assert MAX_WAIT_S == 1800
-    # Живой кейс 2026-09-28: waiting 15708с посреди дня — мусор, не расписание.
+    # waiting 15708 с посреди дня -> вариант отбрасывается
     assert parse_metro_payload([_metro_item(15708)]) == []
     ok = parse_metro_payload([_metro_item(15708), _metro_item(120)])
     assert len(ok) == 1 and ok[0].duration_s == 2464
-    assert parse_metro_payload([_metro_item(1800)]) != []  # граница: 30 мин ещё ок
+    assert parse_metro_payload([_metro_item(1800)]) != []  # граница: ровно MAX_WAIT_S
 
 
 def test_day_exit_line_shows_metro_fallback():

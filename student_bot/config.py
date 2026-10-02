@@ -1,4 +1,4 @@
-"""Central configuration from environment (.env file supported). No secrets in code/logs."""
+"""Central configuration from environment (.env file supported)."""
 from __future__ import annotations
 
 import os
@@ -16,19 +16,16 @@ def _get(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
-# BOT_TOKEN — без него polling невозможен в принципе.
-# PUBLIC_BASE_URL — без него ссылка «🔗 Ключ для iOS» соберётся битой
-# (заглушка вместо домена), поэтому тоже фатальный.
-# GIS_API_KEY — только предупреждение: без ключа дорога честно отдаёт
-# route_failed, остальное (расписание, заметки, уведомления) работает.
+# BOT_TOKEN и PUBLIC_BASE_URL обязательны: без BOT_TOKEN polling не работает,
+# без PUBLIC_BASE_URL ссылка «🔗 Ключ для iOS» собирается некорректно.
+# GIS_API_KEY рекомендован: без него маршруты отдают route_failed,
+# остальное (расписание, заметки, уведомления) работает.
 REQUIRED_ENV_VARS = ("BOT_TOKEN", "PUBLIC_BASE_URL")
 RECOMMENDED_ENV_VARS = ("GIS_API_KEY",)
 
 
 def missing_env_vars() -> tuple[list[str], list[str]]:
-    """(отсутствующие обязательные, отсутствующие рекомендуемые).
-    Читает os.environ (туда уже подмешан .env через load_dotenv выше) —
-    чистáя функция, тестируется без бота."""
+    """(отсутствующие обязательные, отсутствующие рекомендуемые); читает os.environ."""
     missing = [v for v in REQUIRED_ENV_VARS if not os.environ.get(v, "").strip()]
     recommended = [v for v in RECOMMENDED_ENV_VARS if not os.environ.get(v, "").strip()]
     return missing, recommended
@@ -40,7 +37,6 @@ class Settings:
     schedule_api_base: str = "https://stankinapp.ru"
     schedule_groups_path: str = "/api/groups"
     schedule_path: str = "/api/schedule"
-    # Query param names — configurable because real API shape is unknown.
     schedule_group_param: str = "groupName"
     schedule_start_param: str = "startDate"
     schedule_end_param: str = "endDate"

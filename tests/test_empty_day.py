@@ -1,4 +1,4 @@
-"""HTTP-204 empty day + empty schedule normalization (verified live 2026-09-24)."""
+"""HTTP-204 пустой день + нормализация пустого расписания."""
 import asyncio
 from datetime import date
 

@@ -1,13 +1,9 @@
-"""Единый слой сообщений: проверенные данные отдельно, оформление — отдельно.
+"""Единый слой сообщений: данные отдельно, оформление — отдельно.
 
-Telegram и будущий iOS-клиент получают одни и те же структуры (EveningData /
-MorningData / DayData), а форматируют их под себя: format_telegram() и
-format_push(). Push НЕ работает — нет APNs-ключа и сервиса отправки; здесь
-только шаблоны (заголовок + короткий текст с ключевым временем).
-
-Правила: короткий заголовок с эмодзи-подсказкой, затем главное, без длинного
-технического текста. Эмодзи — подсказки, не замена тексту. Если маршрут не
-рассчитан — прямой текст об этом, никакого выдуманного времени выхода.
+Telegram и iOS-клиент получают одни и те же структуры (EveningData /
+MorningData) и форматируют их format_telegram*() / format_push*().
+format_push*() строит шаблоны PushMsg (заголовок + короткий текст); отправка
+не реализована. При route_error текст сообщает об этом прямо, без времени выхода.
 """
 from __future__ import annotations
 
@@ -187,8 +183,7 @@ def format_telegram_morning(d: MorningData, lang: str = "ru") -> str:
 
 def build_focus(lesson, next_lesson, travel_s: int | None, buffer_min: int,
                 now, route_ok: bool, lang: str = "ru") -> str:
-    """Вердикт по фокусной паре дня. travel_s=None — маршрут неизвестен.
-    Никогда не помечает пару «пропущенной» лишь потому, что время выхода прошло."""
+    """Вердикт по фокусной паре дня. travel_s=None — маршрут неизвестен."""
     from datetime import timedelta
 
     en = lang == "en"
@@ -269,8 +264,7 @@ def format_telegram_day(label: str, d: EveningData, exit_line: str = "", lang: s
 
 
 def format_day_list(schedule, now, lang: str = "ru") -> str:
-    """Всё расписание дня одной простынёй: ◾ прошла, 🟡 идёт, ▫️ будет.
-    Чистая функция — «Сегодня» всегда показывает и фокус, и весь день."""
+    """Всё расписание дня одной простынёй: ◾ прошла, 🟡 идёт, ▫️ будет."""
     from datetime import timedelta
 
     en = lang == "en"

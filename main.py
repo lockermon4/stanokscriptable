@@ -1,10 +1,9 @@
 """Единая точка входа (Render Start Command: python main.py).
 
 Запускает health-сервер (:$PORT/health) и aiogram long polling параллельно,
-graceful shutdown на SIGTERM — см. student_bot.bot.main().
+graceful shutdown на SIGTERM.
 
-Сначала — явная валидация окружения одним списком (а не падение на первой же
-переменной глубоко в коде): чего не хватает — всё сразу в лог + выход.
+Сначала — явная валидация окружения: чего не хватает — всё сразу в лог + выход.
 """
 import asyncio
 import logging

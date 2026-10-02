@@ -1,14 +1,7 @@
 """Dual geocoder: Nominatim (primary) + Photon/komoot (fallback).
 
-Why: Nominatim may return 403/429 for some networks (verified 2026-09-24:
-bot-UA blocked from our network, browser-UA passed). Instead of faking the
-User-Agent (against policy), we fall back to Photon, which serves the same
-OSM data and accepted our honest UA (verified: identical coords for
-Вадковский 3А). Both responses are cached; throttle max 1 req/s per service.
-
-Policies:
-- Nominatim: https://operations.osmfoundation.org/policies/nominatim/
-- Photon: https://photon.komoot.io/ (light use OK, self-host for heavy use)
+Nominatim returns 403/429 for some networks — Photon (same OSM data) is the
+fallback. Both responses are cached; throttle max 1 req/s per service.
 """
 from __future__ import annotations
 
@@ -61,7 +54,7 @@ class DualGeocoder:
             headers={"User-Agent": self.s.nominatim_user_agent},
         )
         if r.status_code in (403, 429):
-            return None  # blocked/limited -> caller tries Photon, no exception spam
+            return None  # 403/429: caller falls back to Photon
         r.raise_for_status()
         data = r.json()
         if not data:
@@ -99,9 +92,8 @@ class DualGeocoder:
                 errors.append(f"{name}: no result/blocked")
             except Exception as e:
                 errors.append(f"{name}: {e}")
-        # Cache only positive hits; negative would mask a recovered service.
-        # Return None (callers treat as route_failed) instead of raising,
-        # unless everything errored out.
+        # Only positive results are cached. None => caller treats as route_failed;
+        # raise GeocodeError only if every service errored.
         if any("no result" not in e for e in errors):
             raise GeocodeError("geocode failed: " + "; ".join(errors))
         return None
@@ -201,5 +193,5 @@ class DualGeocoder:
         return None
 
 
-# Backwards-compatible alias (old name used in bot wiring/tests).
+# Alias for the previous class name.
 NominatimGeocoder = DualGeocoder

@@ -1,7 +1,7 @@
 """Route provider abstraction.
 
-RouteResult.is_approximate=True means: provider does NOT support arrival-time /
-live traffic / metro legs, estimate is rough. Bot MUST surface this honestly.
+RouteResult.is_approximate=True means the provider does not support
+arrival-time / live traffic / metro legs, so the estimate is rough.
 """
 from __future__ import annotations
 

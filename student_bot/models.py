@@ -18,7 +18,7 @@ class Lesson:
     starts_at: datetime  # timezone-aware in institution tz
     ends_at: datetime | None
     subject: str
-    building_code: str = ""  # e.g. "корпус А" as returned by API, NOT guessed
+    building_code: str = ""  # как отдаёт API, e.g. "корпус А"
     room: str = ""
     kind: str = ""  # lecture/practice/lab if provided
     status: str = "scheduled"  # scheduled|cancelled|moved|...

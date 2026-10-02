@@ -1,20 +1,17 @@
-"""Маршруты через 2GIS Routing API. Только пешком и метро, машины нет.
+"""Маршруты через 2GIS Routing API: пешком и метро.
 
 Координаты внутри — (lat, lon); в тела запросов конвертируем сами.
 
     async def get_walking_route(from_coords, to_coords) -> список маршрутов
     async def get_metro_route(from_coords, to_coords) -> список маршрутов
 
-Ключ: $GIS_API_KEY. Двухуровневый кэш (allow_cache=True): in-memory +
-персистентный в Store (SQLite/Supabase PG, переживает рестарт/редеплой).
-TTL: metro 15 мин; walk 6 ч (пеший от пробок не зависит, тот же порядок,
-что у routing_foot). Ключ: округление до 4 знаков (~11 м) + тип. Ошибки
-("маршрута нет"/сбой) кэшируются на ERROR_TTL_S=120 с — временный сбой
-не должен залипать. allow_cache=False — всегда свежий запрос (iOS API,
-избранное), результат при этом обновляет кэш.
+Ключ: $GIS_API_KEY. Кэш двухуровневый (при allow_cache=True): in-memory +
+таблица route_cache в Store (SQLite/Supabase PG), переживает рестарт.
+TTL: метро 15 мин, пешком 6 ч, ошибки — ERROR_TTL_S (120 с). Ключ:
+округление координат до 4 знаков + тип маршрута. allow_cache=False —
+всегда свежий запрос, результат обновляет кэш.
 
-Схема ответов (прислана владельцем, 2026-09-26) зафиксирована в
-WALK_FIELDS / METRO_FIELDS — названия полей оттуда, не выдуманы.
+Схема ответов зафиксирована в WALK_FIELDS / METRO_FIELDS.
 """
 from __future__ import annotations
 
@@ -35,12 +32,10 @@ METRO_URL = "https://routing.api.2gis.com/public_transport/2.0"
 
 WALK_TTL_S = 6 * 3600
 METRO_TTL_S = 900
-ERROR_TTL_S = 120  # «маршрута нет»/сбой — не залипать дольше пары минут
+ERROR_TTL_S = 120  # TTL для маркеров ошибки («маршрута нет», сбой API)
 
-# Санити-порог ожидания посадки: дневной интервал метро Москвы — минуты,
-# вечером до ~10 мин. Больше 30 мин на одной посадке — битые данные API
-# (живьём 2026-09-26: waiting_duration=15708с = 4.3ч посреди дня).
-# Такие варианты отбрасываем, а не суммируем в "выйти в 04:42".
+# Порог ожидания посадки: больше 30 мин на одной посадке — нерелевантные
+# данные, такой вариант отбрасывается при разборе ответа.
 MAX_WAIT_S = 1800
 
 
@@ -66,7 +61,7 @@ class RouteOption:
 
 
 # ---------------------------------------------------------------------------
-# Маппинг полей ответа — из документации владельца (2026-09-26), не выдумано.
+# Маппинг полей ответа 2GIS -> наша модель.
 # Walk: {"result": [{"total_distance": {"value", "text"},
 #                    "total_duration": {"value", "text"},
 #                    "maneuvers": [{"type", "comment", "outcoming_path"}]}]}
@@ -75,15 +70,14 @@ class RouteOption:
 #          movements: [{type: passage|walkway|crossing, moving_duration,
 #                       waiting_duration,
 #                       metro: {line_name, ui_direction_suggest, ui_station_count},
-#                       platforms: {names}, (routes реально null),
+#                       platforms: {names}, routes: null,
 #                       waypoint: {name, subtype, comment}}]}]
-# (живьём 2026-09-26: routes=null, ветка в metro.line_name, тип crossing — переход)
 # ---------------------------------------------------------------------------
 WALK_FIELDS: dict[str, str] = {
-    # Реальный ответ (проверен живьём 2026-09-26): total_distance/total_duration —
-    # числа (метры/секунды); ui_total_distance {"unit", "value"},
-    # ui_total_duration — строка; maneuvers — только start/finish;
-    # algorithm — "по основным улицам" / "кратчайший".
+    # total_distance/total_duration — числа (метры/секунды);
+    # ui_total_distance {"unit", "value"}, ui_total_duration — строка;
+    # maneuvers — только start/finish; algorithm — "по основным улицам" /
+    # "кратчайший".
     "routes": "result",
     "duration": "total_duration",
     "distance": "total_distance",
@@ -129,7 +123,7 @@ def parse_walk_payload(payload: dict) -> list[RouteOption]:
         algo = r.get("algorithm") or ""
         if algo:
             summary += f" ({algo})"
-        # maneuvers в реальности — только start/finish, пошаговых улиц нет
+        # maneuvers содержит только start/finish — пошаговых улиц API не отдаёт
         steps = tuple(m.get("comment") for m in (r.get("maneuvers") or [])
                       if isinstance(m, dict) and m.get("comment") not in (None, "", "start", "finish"))
         options.append(RouteOption(mode="walk", duration_s=int(dur), distance_m=int(dist),
@@ -145,8 +139,8 @@ def _metro_steps(movements: list) -> tuple[str, ...]:
         wp = m.get("waypoint") or {}
         mtype = m.get("type")
         if mtype == "passage":
-            # Реально: routes=null, данные в metro{line_name, ui_direction_suggest,
-            # ui_station_count} + platforms{names}; waypoint.name — посадка.
+            # routes=null; ветка в metro.line_name, направление и число
+            # остановок в metro, посадка — waypoint.name
             meta = m.get("metro") or {}
             line = meta.get("line_name") or ""
             station = wp.get("name") or ""
@@ -189,11 +183,11 @@ def _metro_walk_ends(movements: list) -> tuple[int, int]:
 
 
 def moving_seconds(opt: "RouteOption") -> int:
-    """Время в пути БЕЗ ожиданий посадок: Σ moving_duration всех участков.
+    """Время в пути без ожиданий посадок: Σ moving_duration всех участков.
 
-    Нужно для ночного расчёта (01:00–05:30): waiting ночью бессмысленно
-    (метро закрыто / данные гнилые), а езда и пешие куски — реальные.
-    Нет raw movements — возвращаем полный duration (как есть, без выдумок)."""
+    Используется ночным расчётом (01:00–05:30), где waiting_duration
+    нерелевантен, а езда и пешие участки значимы.
+    Нет movements в raw — возвращаем полный duration."""
     raw = opt.raw or {}
     movements = raw.get("movements")
     if not isinstance(movements, list) or not movements:
@@ -212,11 +206,10 @@ def parse_metro_payload(payload: Any, max_wait_s: float | None = MAX_WAIT_S) -> 
     такие отсеиваем; если метро-вариантов не осталось — пустой список
     (вызывающий код кидает NoMetroError).
 
-    Отдельно отбрасываем варианты с безумным ожиданием посадки
-    (waiting_duration > max_wait_s, по умолчанию MAX_WAIT_S): это битые данные
-    API, а не реальное расписание — их суммирование давало "выйти в 04:42".
-    max_wait_s=None — без фильтра (ночной расчёт: waiting игнорируется,
-    берётся только moving-сумма)."""
+    Отдельно отбрасываются варианты с ожиданием посадки больше max_wait_s
+    (по умолчанию MAX_WAIT_S).
+    max_wait_s=None — без фильтра (ночной расчёт: waiting не учитывается,
+    берётся moving-сумма)."""
 
     def _wait_ok(movements: list) -> bool:
         if max_wait_s is None:
@@ -237,7 +230,7 @@ def parse_metro_payload(payload: Any, max_wait_s: float | None = MAX_WAIT_S) -> 
         if not isinstance(it, dict):
             continue
         if it.get("pedestrian"):
-            continue  # только пешком, не метро
+            continue  # пешеходный вариант в метро-ответе
         tt = it.get("transport_types") or []
         if tt and "metro" not in tt:
             continue
@@ -294,16 +287,14 @@ def _option_from_dict(d: dict) -> RouteOption:
 
 
 class TwoGisRouting:
-    """Клиент 2GIS с retry и двухуровневым TTL-кэшем (память + Store).
+    """Клиент 2GIS: retry, rate limit и двухуровневый TTL-кэш (память + Store).
 
-    allow_cache=False — всегда свежий запрос (iOS API, избранное); успех при
-    этом обновляет кэш. attach_cache(store) включает персистентный уровень
-    (таблица route_cache, переживает рестарт).
+    allow_cache=False — свежий запрос на каждый вызов (iOS API, избранное);
+    успех обновляет кэш. attach_cache(store) включает персистентный уровень
+    (таблица route_cache).
 
-    Лимиты: на демо-периоде 50 RPS. Наш флоу — 1–3 последовательных POST на
-    расчёт, но при всплеске параллельных пользователей держим клиентский
-    guard min_interval (по умолчанию 0.05 с -> не более ~20 RPS на инстанс),
-    плюс retry 429/5xx с backoff в _post."""
+    Демо-лимит API — 50 RPS; клиентский guard min_interval (по умолчанию
+    0.05 с -> ~20 RPS на инстанс), retry 429/5xx с backoff — в _post."""
 
     def __init__(self, api_key: str = "", http: httpx.AsyncClient | None = None,
                  walk_ttl_s: int = WALK_TTL_S, metro_ttl_s: int = METRO_TTL_S,
@@ -466,8 +457,7 @@ class TwoGisRouting:
     async def metro(self, fr: tuple[float, float], to: tuple[float, float],
                     allow_cache: bool = True,
                     max_wait_s: float | None = MAX_WAIT_S) -> list[RouteOption]:
-        """max_wait_s=None: без фильтра ожиданий и без кэша (ночной расчёт —
-        сырые опции нельзя класть в дневной кэш)."""
+        """max_wait_s=None — без фильтра ожиданий и мимо кэша (ночной расчёт)."""
         key = cache_key(fr, to, "metro")
         cacheable = allow_cache and max_wait_s is not None
         if cacheable:
@@ -500,7 +490,7 @@ class TwoGisRouting:
             pass
 
 
-# --- Модульные функции из ТЗ (общий клиент, ключ из env) ---
+# --- Модульные обёртки над общим клиентом (ключ из env) ---
 _shared: TwoGisRouting | None = None
 
 

@@ -76,15 +76,15 @@ def test_two_poll_confirmation_and_flap(tmp_path):
 
     from student_bot.buildings import BuildingStore
     b = BuildingStore([])
-    # Опрос 1: Ф исчезла -> pending, молчим.
+    # Опрос 1: Ф исчезла -> pending, без уведомления
     st, d1, _ = run(check_group_day(s, Sched(raw([L("08:30", "М")])), b, "G", DAY, "Europe/Moscow"))
     assert st == "pending" and d1[0]["type"] == "removed"
     assert s.get_snapshot("G", DAY)[1]["subject"] == "Ф"  # снимок старый
-    # Опрос 2 (флап: всё вернулось) -> расхождений нет, pending сброшен.
+    # Опрос 2: всё вернулось -> расхождений нет, pending сброшен
     st, d2, _ = run(check_group_day(
         s, Sched(raw([L("08:30", "М"), L("10:15", "Ф")])), b, "G", DAY, "Europe/Moscow"))
     assert st == "no-diff" and s.get_pending("G", DAY) is None
-    # Опрос 3-4: исчезновение держится дважды -> confirmed.
+    # Опросы 3-4: исчезновение дважды -> confirmed
     st, _, _ = run(check_group_day(s, Sched(raw([L("08:30", "М")])), b, "G", DAY, "Europe/Moscow"))
     assert st == "pending"
     st, d4, fresh = run(check_group_day(s, Sched(raw([L("08:30", "М")])), b, "G", DAY, "Europe/Moscow"))

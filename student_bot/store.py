@@ -1,10 +1,9 @@
-"""Storage for user settings + notes + favorites + api tokens. No addresses in logs.
+"""Хранение состояния: настройки пользователей, заметки, избранные, api-токены.
 
-Два бэкенда, один интерфейс: локальный файл/SQLite (тесты, локалка) или
-Postgres (Supabase в проде). Выбор по строке подключения:
+SQLite локально, Postgres (Supabase) по строке подключения:
   Store("bot_data.sqlite3")  -> sqlite3
   Store("postgresql://...")  -> psycopg + пул
-SQL пишется с плейсхолдерами `?`, для PG переписываются в `%s` в одном месте.
+SQL пишется с плейсхолдерами `?`, для PG переписываются в `%s`.
 """
 from __future__ import annotations
 
@@ -37,7 +36,7 @@ def norm_transport(v: str | None) -> str:
 
 
 def parse_coords(s: str) -> tuple[float, float] | None:
-    """'lat,lon' -> (lat, lon) или None. Чистая функция."""
+    """'lat,lon' -> (lat, lon) или None."""
     try:
         lat_s, lon_s = s.split(",")
         return (float(lat_s), float(lon_s))
@@ -86,8 +85,8 @@ class Store:
             from psycopg_pool import ConnectionPool
             from psycopg.rows import dict_row
 
-            # Пул держит тёплые коннекты (Supabase/pooler не любят частые
-            # переподключения), транзакции коммитятся выходом из контекста.
+            # Пул держит тёплые коннекты (Supabase/pooler),
+            # транзакции коммитятся выходом из контекста.
             self._pool = ConnectionPool(
                 path_or_url, min_size=1, max_size=4, open=True,
                 kwargs={"row_factory": dict_row, "connect_timeout": 10})
@@ -146,7 +145,7 @@ class Store:
                     try:
                         c.execute(f"ALTER TABLE users ADD COLUMN {col}")
                     except Exception:
-                        pass  # already migrated
+                        pass  # колонка уже есть
             c.execute(
                 f"""CREATE TABLE IF NOT EXISTS notes(
                 user_id {int_pk}, day TEXT, text TEXT,
@@ -247,7 +246,7 @@ class Store:
                 ON CONFLICT(key) DO UPDATE SET payload=excluded.payload,
                 fetched_at=excluded.fetched_at""",
                 (key, payload, fetched_at))
-            # чистим далеко просроченное (макс TTL 6 ч + день)
+            # удаление записей старше 7 дней
             c.execute("DELETE FROM route_cache WHERE fetched_at < ?",
                       (fetched_at - 86400 * 7,))
 
@@ -300,15 +299,14 @@ class Store:
             return (cur.rowcount or 0) > 0
 
     # api_tokens: один токен на пользователя для iOS HTTP API (Scriptable).
-    # Токен в логи не пишем (см. sendlog: логируются только длины).
     def get_api_token(self, user_id: int) -> str:
-        """Существующий токен или "" (не создаёт молча — генерация явная)."""
+        """Возвращает существующий токен или ""; ничего не создаёт."""
         with self._conn() as c:
             r = c.execute("SELECT token FROM api_tokens WHERE user_id=?", (user_id,)).fetchone()
         return r["token"] if r and r["token"] else ""
 
     def issue_api_token(self, user_id: int) -> str:
-        """Создать (или ПЕРЕВЫПУСТИТЬ — старый сразу невалиден)."""
+        """Выпустить новый токен; предыдущий перестаёт действовать."""
         import secrets
         from datetime import datetime, timezone
 
@@ -327,7 +325,7 @@ class Store:
             r = c.execute("SELECT user_id FROM api_tokens WHERE token=?", (token,)).fetchone()
         return int(r["user_id"]) if r else None
 
-    # schedule_snapshots: последний ПОДТВЕРЖДЁННЫЙ снимок пар (группа, дата).
+    # schedule_snapshots: последний подтверждённый снимок пар (группа, дата).
     # schedule_pending: неподтверждённый дифф (ждёт второго опроса подряд).
     # schedule_changes: последний подтверждённый батч изменений (для iOS API).
     # JSON-списки канонических уроков/изменений; TEXT работает на sqlite и PG.
@@ -367,7 +365,7 @@ class Store:
         return json.dumps(items, ensure_ascii=False)
 
     def get_snapshot(self, group: str, day: str) -> list | None:
-        """None = снимка ещё нет (первый опрос сохраняем молча)."""
+        """None — снимка ещё нет."""
         with self._conn() as c:
             r = c.execute("SELECT lessons_json FROM schedule_snapshots WHERE group_name=? AND day=?",
                           (group, day)).fetchone()

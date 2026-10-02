@@ -1,13 +1,11 @@
-"""Static Moscow-metro travel-time estimator. NO train schedules involved.
+"""Static Moscow-metro travel-time estimator (no train schedules, no realtime).
 
-Method (honest approximation, documented for users as such):
   total = walk(home -> station A) + metro(A -> B) + walk(B -> building)
   metro(A -> B) = BOARD_WAIT + stops * PER_STOP + transfers * TRANSFER
-with static assumptions below. No realtime, no per-train times, no GTFS.
-Station topology: data/metro_moscow.json (OSM via Overpass, ODbL).
+Station topology: data/metro_moscow.json.
 
-Coverage: 17 subway lines, 215 stations (Sep 2026). NOT included: MCC, MCD,
-monorail, suburban rail — door-to-door via those falls back to plain routing.
+Coverage: 17 subway lines, 215 stations. MCC, MCD, monorail and suburban rail
+are not modeled — door-to-door via those falls back to plain routing.
 """
 from __future__ import annotations
 
@@ -16,10 +14,8 @@ import json
 import math
 from dataclasses import dataclass, field
 
-# Static assumptions (seconds). Leg cost scales with inter-station distance
-# (validated against real rides: Коньково→Октябрьская ~21-23 мин модели vs ~20-22
-# реальных; flat 150 с/перегон занижал длинные перегоны БКЛ на ~25%).
-# Transfers and boarding waits are SEPARATE weights, not folded into legs.
+# Static assumptions (seconds). Leg cost scales with inter-station distance.
+# Transfers and boarding waits are separate weights, not folded into legs.
 METRO_SPEED_MS = 11.0  # ~40 км/ч средняя участковая скорость
 METRO_DWELL_S = 30  # стоянка на станции, включена в каждый перегон
 TRANSFER_S = 300  # пересадка между линиями (переход + ожидание)

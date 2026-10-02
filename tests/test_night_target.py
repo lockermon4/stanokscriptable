@@ -65,8 +65,7 @@ def test_night_anchored_from_open():
 
 
 def test_night_uses_moving_despite_insane_wait():
-    # Живой кейс 02:15: все 3 опции с waiting>1800 — ночной расчёт берёт
-    # moving-сумму, а не no_data.
+    # Все опции с waiting>1800: ночной расчёт берёт moving-сумму.
     from student_bot.service import compute_night_exit
     routing = FakeRouting(metro_s=3600)
     out = run(compute_night_exit(

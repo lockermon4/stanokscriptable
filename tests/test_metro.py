@@ -1,7 +1,7 @@
-"""Unit tests for the static metro estimator + sanity on real OSM data.
+"""Тесты статического оценщика времени в метро + данные реальной сети OSM.
 
-Leg weight: dist / METRO_SPEED_MS + METRO_DWELL_S (distance-based, validated);
-transfers and boarding waits are separate weights. See README for calibration.
+Вес перегона: dist / METRO_SPEED_MS + METRO_DWELL_S;
+пересадки и ожидание посадки — отдельные веса.
 """
 import os
 
@@ -119,7 +119,7 @@ def test_r6_konkovo_nizhegorodskaya_via_bkl():
 
 
 def test_calibration_konkovo_oktyabrskaya():
-    # Known ride: ~20-22 min real. Model must stay in a sane band (not fitted).
+    # Известная поездка Коньково→Октябрьская: ~20-22 мин
     g = _real()
     r = g.ride(_by_name(g, "Коньково").id, _by_name(g, "Октябрьская").id)
     assert r.transfers == 0 and r.stops == 8

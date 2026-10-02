@@ -90,7 +90,7 @@ def test_confirmed_gate_from_yaml():
 
 
 def test_unknown_building_no_invented_route():
-    # empty cabinet -> honestly unknown, no guessing
+    # пустой cabinet -> корпус неизвестен
     sched = FakeSched([{"subject": "М", "date": "2026-09-24", "startTime": "09:00", "endTime": "10:30",
                         "cabinet": "", "type": "Лекция", "groupName": "G"}])
     view = run(build_day_view(settings=S, schedule_client=sched, buildings=_store(),

@@ -150,8 +150,7 @@ def day_exit_line(view, lang: str = "ru") -> str:
     if p.already_passed:
         s += ". ⚠️ Already past — leave now!" if en else ". ⚠️ Время уже прошло — выходите сейчас!"
     if getattr(view, "metro_fallback", False):
-        # Метро отвалилось/соврало — время посчитано пешком. Молчать об этом
-        # нельзя: иначе "выйти в 04:42" выглядит как баг бота, а не данных.
+        # Metro-расчёт недоступен: время посчитано пешком, помечаем в строке
         s += "\n" + no_metro_fallback(lang)
     return s
 
@@ -199,8 +198,8 @@ async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict,
             for u in store.all_users():
                 if not u.group or (not u.home_address and home_coords_of(u) is None):
                     continue
-                # Ночью (01:00–05:30) метро закрыто: 2GIS не дёргаем, считаем
-                # пешком и честно пишем об этом в утреннем сообщении.
+                # Ночью (01:00–05:30) метро закрыто: считаем пешком, в
+                # утреннем сообщении добавляемая строка о закрытом метро
                 night_metro = u.transport == "metro" and metro_state(now) == "closed"
                 kw = dict(group=u.group, home_address=u.home_address,
                           home_coords=home_coords_of(u),
@@ -247,17 +246,15 @@ async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict,
                     morn_views[u.user_id] = view
                 if view.plan is None:
                     continue
-                # Время пинга — пользовательский отступ morning_min_before_exit.
-                # Окно проверяется каждый тик (по кэшированному view), а не
-                # только в момент тяжёлого пересчёта: раньше пересчёт был
-                # раз в 30 мин, окно — 2 мин, и они почти не совпадали.
-                # Строго до выхода, без дублей (should_send_morning).
+                # Время пинга = пользовательский отступ morning_min_before_exit;
+                # окно проверяется каждый тик по кэшированному view
+                # (тяжёлый пересчёт при этом — не чаще раза в 30 мин).
                 if should_send_morning(now, view.plan, u.morning_min_before_exit):
                     note = store.get_note(u.user_id, today.isoformat())
                     text = format_telegram_morning(morning_card(view, note), u.lang)
                     if night_metro:
                         text += "\n" + metro_closed(u.lang)
-                    # Погода на время выхода (дом сохранён — иначе пропускаем молча).
+                    # Погода на время выхода (нужен сохранённый пин дома).
                     if u.home_lat is not None and u.home_lon is not None:
                         w = await get_weather(u.home_lat, u.home_lon, view.plan.exit_at,
                                               api_key=settings.weatherapi_key)
@@ -266,7 +263,7 @@ async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict,
                     await bot.send_message(u.user_id, text)
                     store.mark_sent(u.user_id, today.isoformat(), "morn")
         except Exception:
-            pass  # never crash loop; errors surface in day views
+            pass  # цикл не прерывается; ошибка видна в DayView
         await asyncio.sleep(60)
 
 
@@ -313,7 +310,7 @@ async def main() -> None:
         return await verify_address_text(geocoder, text, lang)
 
     async def home_xy(u) -> tuple[float, float] | None:
-        """Точка отправления: пин или геокод адреса. None — посчитать нельзя."""
+        """Точка отправления: пин или геокод адреса. None — точки нет."""
         hc = home_coords_of(u)
         if hc is not None:
             return hc
@@ -325,7 +322,7 @@ async def main() -> None:
     async def fetch_mode_travel(sess: dict, mode: str,
                                 allow_cache: bool = True) -> tuple[int | None, str, bool]:
         """Свежая дорога по режиму: (travel_s, travel_txt, used_walk_fallback).
-        Метро недоступно -> пешком с флагом (честно, не молча)."""
+        Метро недоступно -> пешком, третий флаг поднят."""
         try:
             if mode == "metro":
                 try:
@@ -342,10 +339,9 @@ async def main() -> None:
             return None, "", False
 
     async def recalc_block(u) -> str:
-        """Fresh exit/travel/arrival for today from CURRENT stored settings.
-        Called after group/address/transport/buffer changes. Never returns
-        stale numbers: empty string only when recalc is impossible (no group
-        or no home yet); otherwise a fresh calc or an honest failure line."""
+        """Пересчёт выхода/дороги/прибытия на сегодня по текущим настройкам.
+        Вызывается после смены группы, адреса, транспорта или запаса.
+        Пустая строка — когда расчёт невозможен (нет группы или дома)."""
         lang = u.lang
         if not u.group or (not u.home_address and home_coords_of(u) is None):
             return ""
@@ -436,7 +432,7 @@ async def main() -> None:
         u = store.get_user(m.from_user.id)
         has_group, has_home = bool(u.group), bool(u.home_address or home_coords_of(u))
         if not has_group and not has_home:
-            # brand-new user: inherit Telegram locale once, then it sticks
+            # новый пользователь: язык берётся из Telegram и дальше не перезаписывается
             u.lang = norm_lang(m.from_user.language_code or "")
             store.save_user(u)
         lang = u.lang
@@ -475,8 +471,7 @@ async def main() -> None:
             for_today = action in ("today", "leave")
             view = None
             if action != "leave":
-                # leave идёт своим флоу (lesson_target + выбор типа) — лишний
-                # предрасчёт 2GIS здесь не нужен.
+                # leave: свой флоу (lesson_target + выбор типа), без предрасчёта 2GIS
                 view = await build_day_view(group=u.group, day=day, now=now, home_address=u.home_address,
                                             home_coords=home_coords_of(u),
                                             transport=u.transport, buffer_min=u.buffer_min,
@@ -532,7 +527,7 @@ async def main() -> None:
             else:
                 if action == "today":
                     # Intraday: фокус (ближайшая пара, на которую можно попасть)
-                    # + весь день простынёй, чтобы остальное расписание было видно.
+                    # "Остальное расписание" — простынёй, чтобы была видна вся дата
                     if view.schedule_failed:
                         await m.answer(format_telegram_day(
                             (f"Today, {day.strftime('%d.%m')}" if lang == "en" else
@@ -559,8 +554,8 @@ async def main() -> None:
                         focus_text = build_focus(lesson, next_lesson, travel_s,
                                                  u.buffer_min, now, route_ok, lang)
                         if view.metro_fallback and norm_transport(u.transport) == "metro":
-                            # Время посчитано пешком вместо метро: ночью — потому что
-                            # закрыто, днём — потому что 2GIS соврал. Молчать нельзя.
+                            # Время посчитано пешком вместо метро: ночью метро
+                            # закрыто, днём — не проложилось.
                             if metro_state(now) == "closed":
                                 focus_text += "\n" + metro_closed(lang)
                             else:
@@ -640,7 +635,7 @@ async def main() -> None:
         label = await geocoder.reverse_label(lat, lon)
         near = (f" Nearby: {label}." if label else "") if lang == "en" else \
             (f" Рядом с: {label}." if label else "")
-        # Pin is NOT claimed to be an exact house match.
+        # Пин — точка на карте; совпадение с домом не подтверждается.
         addr_picks[uid] = [(f"📍 {lat}, {lon}", lat, lon)]
         pending[uid] = "address_confirm"
         if lang == "en":
@@ -902,13 +897,12 @@ async def main() -> None:
         await m.answer("Use the buttons or /start." if en else
                        "Не понял. Используйте кнопки или /start.", reply_markup=kb)
 
-    # --- Inline buttons: settings + notes (all callbacks answered; every
-    # --- path edits the message or deletes it, nothing hangs silently).
+    # --- Инлайн-кнопки: настройки, заметки, маршруты ---
     @dp.callback_query()
     async def callbacks(cb: CallbackQuery):
         uid = cb.from_user.id
         data = cb.data or ""
-        await cb.answer()  # dismiss the spinner on every path
+        await cb.answer()  # снять спиннер у кнопки
 
         def fresh() -> UserSettings:
             return store.get_user(uid)
@@ -1069,8 +1063,7 @@ async def main() -> None:
             await edit_settings()  # re-rendered in the NEW language
             return
         if data in ("set:ioskey", "set:ioskey_reissue"):
-            # Токен показываем только здесь, в личке; в логи он не попадает
-            # (sendlog пишет длины сообщений, не текст).
+            # iOS-токен: выдача и перевыпуск, показ только в личке.
             u = fresh()
             token = store.issue_api_token(uid) if data == "set:ioskey_reissue" \
                 else (store.get_api_token(uid) or store.issue_api_token(uid))

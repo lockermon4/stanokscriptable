@@ -1,12 +1,11 @@
-"""OSRM provider (MVP default).
+"""OSRM provider.
 
-Capabilities (verified, see README):
+Capabilities:
 - profiles: driving / foot / bike (worldwide demo server)
 - demo server: max ~1 req/s, reasonable non-commercial use, no uptime guarantee
-- NO public-transport/metro legs, NO arrival-time param, NO live traffic/jams.
-Therefore every result has is_approximate=True, and mode "transit" is served
-as a walking estimate with approximate flag (honest fallback, not metro).
-Self-host OSRM via OSRM_BASE for production.
+- no public-transport/metro legs, no arrival-time param, no live traffic.
+Every result has is_approximate=True; mode "transit" is served as a walking
+estimate (no metro legs available).
 """
 from __future__ import annotations
 
@@ -41,12 +40,12 @@ class OsrmProvider:
         profile = _PROFILE.get(mode, "foot")
         approx = True  # OSRM never gives live/arrival-accurate times
         if mode == "transit":
-            profile = "foot"  # honest fallback, flagged approximate
+            profile = "foot"  # transit served as foot, flagged approximate
         (flon, flat), (tlon, tlat) = from_lonlat, to_lonlat
         url = f"{self.s.osrm_base}/route/v1/{profile}/{flon},{flat};{tlon},{tlat}"
         last: Exception | None = None
         data: dict | None = None
-        for attempt in (0, 1, 2):  # retry transport-level failures only (same policy as schedule client)
+        for attempt in (0, 1, 2):  # retry transport-level failures only
             try:
                 r = await self._http.get(url, params={"overview": "false"})
                 r.raise_for_status()

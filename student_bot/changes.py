@@ -1,14 +1,14 @@
 """Детектор изменений расписания: stankinapp не отдаёт флаги отмены/переноса,
-отменённая пара просто исчезает. Ловим сравнением снимков.
+отменённая пара просто исчезает. Изменения ловим сравнением снимков.
 
-Защита от ложных срабатываний:
-а) упал запрос / ошибка API — НЕ "все отменили": снимок не трогаем, молчим;
-б) изменение подтверждается только вторым опросом подряд (pending в БД);
-в) первый снимок новой даты сохраняем молча.
+Правила:
+- при ошибке API снимок не меняется, уведомлений нет;
+- изменение подтверждается вторым опросом подряд (pending в БД);
+- первый снимок новой даты сохраняется без уведомлений.
 
 Опрос по группам (одна группа = один запрос), сегодня + 7 дней, раз в 30 мин
-в том же asyncio-цикле, что планировщик. Факты отправки — в БД (sent),
-переживают рестарт; повторное уведомление тем же батчем исключено снимком.
+в том же asyncio-цикле, что планировщик. Факты отправки — в таблице sent,
+переживают рестарт.
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def _key(l: dict) -> tuple[str, str]:
 
 
 def diff_snapshots(old: list[dict], new: list[dict]) -> list[dict]:
-    """Чистая функция: removed/added/moved/room/teacher/time. Детерминированный порядок."""
+    """removed/added/moved/room/teacher/time. Порядок детерминированный."""
     old_by = {_key(l): l for l in old}
     new_by = {_key(l): l for l in new}
     changes: list[dict] = []
@@ -106,7 +106,7 @@ async def check_group_day(store, sched_client, buildings, group: str, day_iso: s
                           tz_name: str) -> tuple[str, list[dict], list[dict]]:
     """Один опрос (группа, дата). Возвращает (статус, дифф, свежие_уроки):
     ok/no-diff | ok/confirmed | ok/pending | error | first-snapshot.
-    Снимок трогаем только при успехе; при ошибке API — ничего не меняем."""
+    Снимок обновляется только при успехе; при ошибке API — ничего не меняется."""
     from .normalize import normalize_day
 
     try:
@@ -123,7 +123,7 @@ async def check_group_day(store, sched_client, buildings, group: str, day_iso: s
     fresh = snapshot_of(sched)
     prev = store.get_snapshot(group, day_iso)
     if prev is None:
-        store.save_snapshot(group, day_iso, fresh)  # первый снимок — молча
+        store.save_snapshot(group, day_iso, fresh)  # первый снимок — без уведомлений
         return "first-snapshot", [], fresh
     diff = diff_snapshots(prev, fresh)
     if not diff:
@@ -132,7 +132,7 @@ async def check_group_day(store, sched_client, buildings, group: str, day_iso: s
         return "no-diff", [], fresh
     pending = store.get_pending(group, day_iso)
     if pending == diff:
-        return "confirmed", diff, fresh  # второй опрос подряд видит то же — шлём
+        return "confirmed", diff, fresh  # подтверждено вторым опросом подряд
     store.save_pending(group, day_iso, diff)  # первый раз видим — ждём повтора
     return "pending", diff, fresh
 

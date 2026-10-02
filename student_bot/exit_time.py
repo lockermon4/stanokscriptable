@@ -1,4 +1,4 @@
-"""Exit-time math + first-lesson selection. Pure functions (easily tested)."""
+"""Exit-time math + first-lesson selection. Pure functions."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from .models import DaySchedule, Lesson
 from .routing_base import RouteResult
 
-# Formula: exit = lesson_start - travel - buffer. Always.
+# exit = lesson_start - travel - buffer
 
 
 @dataclass(frozen=True)
@@ -22,10 +22,10 @@ class ExitPlan:
 
 
 def first_relevant_lesson(schedule: DaySchedule, now: datetime) -> Lesson | None:
-    """First non-cancelled lesson with ends_at (or starts_at) still in the future.
+    """Первая неотменённая пара, у которой ends_at (или starts_at) ещё в будущем.
 
-    Multiple lessons in a row / different buildings: we return only the FIRST
-    one needing a trip from home (inter-building moves are a later stage).
+    Возвращает только первую пару, до которой нужно идти от дома;
+    перемещения между корпусами здесь не считаются.
     """
     for les in schedule.active_lessons:
         end = les.ends_at or (les.starts_at + timedelta(minutes=90))
@@ -62,7 +62,7 @@ def format_duration(seconds: int) -> str:
 
 def anchor_to_open(exit_needed: datetime, lesson_start: datetime, travel_s: int,
                    open_dt: datetime) -> tuple[str, datetime, datetime]:
-    """Привязка выхода к открытию метро (чистая функция).
+    """Привязка выхода к открытию метро.
 
     exit_needed < open_dt (выход попадает в 01:00–05:30) → старт отсчёта
     переносится на open_dt (05:30): ("anchored"|"miss", open_dt, arrival).

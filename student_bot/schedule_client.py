@@ -1,11 +1,10 @@
-"""Client for stankinapp.ru schedule API (verified 2026-09-23).
+"""Client for stankinapp.ru schedule API.
 
 GET {base}/api/groups -> {"items": ["ИДБ-26-14", ...]} (plain strings)
 GET {base}/api/schedule?groupName=ИДБ-26-14&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
     -> {"items": [{"id","date":"2026-09-21","startTime":"08:30","endTime":"11:50",
         "groupName","subject","teacher","type","subgroup","cabinet",
         "slotNumber","pairs":null|[{startTime,endTime}]}]}
-Param names remain configurable via Settings.
 Normalization lives in normalize.py.
 """
 from __future__ import annotations
@@ -25,8 +24,8 @@ class ScheduleApiError(RuntimeError):
 
 
 async def _get_with_retry(client: httpx.AsyncClient, url: str, **kw) -> httpx.Response:
-    """Retry transport-level failures (flaky TLS/timeouts, verified on
-    stankinapp.ru); HTTP error statuses are NOT retried."""
+    """Повторяет только transport-ошибки (TLS/таймауты);
+    HTTP-статусы ошибок не повторяет."""
     last: Exception | None = None
     for attempt in (0, 1, 2):
         try:
@@ -41,9 +40,7 @@ class ScheduleClient:
     def __init__(self, settings: Settings, http: httpx.AsyncClient | None = None):
         self.s = settings
         self._http = http or httpx.AsyncClient(timeout=15.0)
-        # In-memory TTL cache for day/range JSON: the scheduler loop asks for
-        # today's schedule every 60 s per user and every menu press refetches —
-        # a fixed day's timetable effectively never changes within minutes.
+        # In-memory TTL cache for day/range JSON responses.
         self._day: dict[tuple[str, str, str], tuple[float, object]] = {}
         self._day_ttl = getattr(settings, "schedule_day_ttl_s", 900)
 
@@ -59,7 +56,7 @@ class ScheduleClient:
                 with open(self.s.groups_cache_file, "w", encoding="utf-8") as f:
                     json.dump({"at": time.time(), "data": payload}, f, ensure_ascii=False)
         except Exception:
-            pass  # cache is best-effort, never break the request
+            pass  # кэш best-effort
 
     def _cache_load(self, max_age_h: float | None = None) -> object | None:
         try:
@@ -95,14 +92,14 @@ class ScheduleClient:
                 return payload
             except Exception as e:
                 errors.append(f"fallback: {e}")
-        cached = self._cache_load()  # any age: stale list beats no list
+        cached = self._cache_load()  # кэш без ограничения возраста
         if cached is not None:
             return cached
         raise ScheduleApiError("GET groups failed: " + "; ".join(errors))
 
     async def get_day_raw(self, group: str, day_iso: str, fresh: bool = False) -> object:
         """One day as a range query startDate=endDate=day_iso (stankinapp has no single-day endpoint).
-        fresh=True: мимо in-memory кэша (iOS API перечитывает перед отдачей)."""
+        fresh=True — мимо in-memory кэша."""
         return await self.get_range_raw(group, day_iso, day_iso, fresh=fresh)
 
     async def get_range_raw(self, group: str, start_iso: str, end_iso: str,
@@ -124,7 +121,7 @@ class ScheduleClient:
                 headers={"Referer": "https://stankinapp.ru/", "Accept": "application/json"},
             )
             if r.status_code == 204 or not (r.text or "").strip():
-                return {"items": []}  # empty day (verified 2026-09-27: 204, no body)
+                return {"items": []}  # пустой день: ответ 204 без тела
             r.raise_for_status()
             payload = r.json()
             self._day[key] = (time.monotonic(), payload)

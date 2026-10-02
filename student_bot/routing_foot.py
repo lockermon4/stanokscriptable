@@ -1,15 +1,12 @@
 """Pedestrian routing via FOSSGIS (routing.openstreetmap.de/routed-foot).
 
-Why not OSRM demo for foot (verified 2026-09-24): router.project-osrm.org
-currently returns IDENTICAL duration/distance for foot/bike/driving profiles
-(734 m in 104 s = car speed), i.e. no real foot profile. FOSSGIS serves a real
-foot profile (same 734 m in 507 s = 4.5 km/h, correct walking speed).
+Used instead of the OSRM demo: the demo returns identical results for
+foot/bike/driving profiles, while FOSSGIS serves a real walking profile.
 
-Policy: max ~1 req/s, reasonable non-commercial use, attribution OSM.
-Long-term: self-host OSRM with foot profile (see README).
+Rate limit: max ~1 req/s, reasonable non-commercial use, attribution OSM.
 
-URL scheme differs from OSRM demo: {base}/routed-foot/route/v1/driving/...
-(provider ignores the profile segment; the server fixes the profile).
+URL scheme: {base}/routed-foot/route/v1/<profile>/... — the server fixes the
+profile, the profile segment in the URL is ignored.
 """
 from __future__ import annotations
 
@@ -27,8 +24,8 @@ class FootRoutingError(RuntimeError):
 
 
 class FosFootProvider:
-    """Real walking times (not straight-line!). Never present as exact to the
-    meter: OSRM foot routing follows sidewalks but knows no closures/weather."""
+    """Время пешком по OSM-сети (не по прямой).
+    Закрытий и погоды провайдер не знает."""
 
     supports_transit = False
     supports_arrival_time = False
@@ -72,8 +69,7 @@ class FosFootProvider:
         return secs
 
     def drop(self) -> None:
-        """Clear cached legs (called when a user changes home: old legs must
-        never leak into a new calculation)."""
+        """Сброс кэша участков — вызывается при смене дома."""
         self._cache.clear()
 
     async def route(self, from_lonlat: tuple[float, float], to_lonlat: tuple[float, float],

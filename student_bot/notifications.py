@@ -67,7 +67,7 @@ def morning_text(plan: ExitPlan | None, lesson_note: str = "", *, route_failed: 
 
 
 def should_send_morning(now: datetime, plan: ExitPlan | None, minutes_before_exit: int) -> bool:
-    """Morning ping comes before exit time, never after it."""
+    """Morning ping fires in [exit_at - minutes_before_exit, exit_at)."""
     from datetime import timedelta
 
     if plan is None:

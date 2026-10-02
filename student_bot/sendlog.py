@@ -1,15 +1,12 @@
 """Логирование исходящих сообщений + входящих апдейтов (стандартный logging).
 
-Почему два механизма:
-- SendLogMiddleware (dp.message.middleware / dp.callback_query.middleware)
-  видит ВХОДЯЩИЕ апдейты: user_id/username, тип, время обработки хендлером.
-- install_send_logging(bot) оборачивает bot.send_message / bot.edit_message_text
-  и видит ИСХОДЯЩИЕ: user_id, тип сообщения, успех/ошибку, время отправки.
-  Middleware хендлеров результат отправки увидеть не может в принципе:
-  вызовы Bot API идут мимо диспетчера. m.answer / cb.message.answer /
-  bot.send_message планировщика — всё проходит через обёртки ниже.
-
-Ничего не проглатывается: ошибки логируются и пробрасываются дальше.
+Два механизма:
+- SendLogMiddleware (dp.message / dp.callback_query middleware) — входящие
+  апдейты: user_id/username, тип, время обработки хендлером.
+- install_send_logging(bot) — обёртки bot.send_message / bot.edit_message_text:
+  исходящие (user_id, тип сообщения, успех/ошибку, время отправки). Вызовы Bot
+  API идут мимо диспетчера, поэтому middleware их не видит.
+Ошибки логируются и пробрасываются дальше.
 """
 from __future__ import annotations
 
@@ -30,14 +27,14 @@ log = logging.getLogger("bot.send")
 def setup_logging(level: str = "INFO") -> None:
     import sys
 
-    # Render читает логи из stdout/stderr — явно stdout, не файл.
+    # Render читает логи из stdout/stderr — выводим в stdout.
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         stream=sys.stdout,
         format="%(asctime)s %(levelname)-5s %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    # Шум транспортных библиотек в INFO не нужен (каждый HTTP-запрос строкой).
+    # Транспортные библиотеки: только WARNING (в INFO шумят на каждый HTTP-запрос).
     for noisy in ("httpx", "httpcore", "aiohttp.access"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 

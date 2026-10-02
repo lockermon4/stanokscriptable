@@ -33,4 +33,4 @@ def test_schedule_change_updates():
     v1, _ = normalize_day([{"subject": "М", "start": "09:00", "building": "1"}], group="G", day=day, tz_name="Europe/Moscow")
     v2, _ = normalize_day([{"subject": "М", "start": "09:00", "building": "2"}], group="G", day=day, tz_name="Europe/Moscow")
     assert v1.lessons[0].building_code != v2.lessons[0].building_code
-    # бот обязан пересчитать маршрут, а не reuse старый: корпуса различаются
+    # корпуса различаются -> ожидается пересчёт маршрута, не reuse

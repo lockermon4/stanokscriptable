@@ -1,13 +1,13 @@
 """Address verification before saving: parse -> match field-by-field -> confirm.
 
-Rules (user requirement):
+Matching rules:
 - city must be Moscow (absent city defaults to Moscow and is shown in confirm);
 - street + house number must match exactly (normalized);
 - corpus/structure must match too, if the user specified it;
 - only a house-level result with coordinates is accepted; street/district-only
   matches are insufficient;
 - several suitable results -> show variants for choice.
-Pure functions (unit-tested); network lives in geocode.py.
+Pure functions; geocoding lives in geocode.py.
 """
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ def parse_address(text: str) -> ParsedAddress:
             p.city = part.strip()
             continue
         # block: корп/стр/вл + number (may share part with house: "12 к. 2").
-        # NOTE: alternatives longest-first so "строение" isn't shadowed by "стр".
+        # Alternatives ordered longest-first ("строение" before "стр").
         bm = re.search(r"(корпус|строение|владение|корп|соор|стр|вл|к|с)\.?\s*(\d+\s*[а-яa-z]?)", low)
         if bm:
             word = bm.group(1)

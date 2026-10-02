@@ -1,21 +1,16 @@
 """Погода в утреннем уведомлении: WeatherAPI.com, ключ в WEATHERAPI_KEY.
 
-Берём почасовой прогноз на время выхода (или на 08:00, если выход не посчитан):
+Почасовой прогноз на время выхода (или на 08:00, если выход не посчитан):
 температура, вероятность и тип осадков. Порог зонта: precip_prob >= 50%.
 Запрос: GET forecast.json?key=...&q={lat},{lon}&days=1&aqi=no&alerts=no.
-Часы forecast.forecastday[*].hour[] — wall time зоны location.tz_id
-(проверяем, что это Europe/Moscow; иначе берём зону из ответа как есть),
-`when` приводим к ней же: UTC/наивное `when` выбор не сдвигает.
-Температура — temp_c как есть, без конвертации (проверено живьём:
-hourly temp_c совпадает с current.temp_c). Если запрошенное время уже
-прошло (вечером виджет ссылается на утренний exit_at), берём fact из
-current.temp_c, а не устаревший почасовой слот: прогноз на прошедший
-час — это утро, а не «сейчас на улице».
+Часы forecast.forecastday[*].hour[] — wall time зоны location.tz_id,
+`when` приводится к ней же.
+Температура — temp_c без конвертации; если запрошенное время уже прошло,
+берётся current.temp_c, иначе — почасовой слот.
 Вероятность — max(chance_of_rain, chance_of_snow); тип — по
 will_it_rain/will_it_snow, шансам и condition.text.
 Кэш 30 мин по округлённым координатам хранит сырой почасовой ответ,
-час выбирается при каждом вызове. Таймаут короткий; ключа нет или
-ошибка — None, утреннее уходит как обычно. Цифры из воздуха не берём.
+час выбирается при каждом вызове. Нет ключа или ошибка — None.
 """
 from __future__ import annotations
 
@@ -173,7 +168,7 @@ def _select(payload: dict, when: datetime) -> Weather:
 async def get_weather(lat: float, lon: float, when: datetime,
                       http: httpx.AsyncClient | None = None,
                       api_key: str | None = None) -> Weather | None:
-    """Прогноз на час, ближайший к `when`. None = данных нет (молча пропускаем)."""
+    """Прогноз на час, ближайший к `when`. None — данных нет."""
     try:
         return _select(await _fetch_hours(lat, lon, api_key, http), when)
     except Exception as e:

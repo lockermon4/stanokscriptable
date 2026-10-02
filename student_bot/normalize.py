@@ -1,8 +1,8 @@
 """Normalization of schedule JSON.
 
-Primary: real stankinapp.ru shape (verified 2026-09-23, see schedule_client.py).
-Fallback: tolerant generic parser for other shapes (never invents values).
-If a lesson lacks start time or subject it is skipped (count returned honestly).
+Primary: stankinapp.ru shape (see schedule_client.py).
+Fallback: tolerant generic parser for other shapes.
+Lessons without start time or subject are skipped (skipped count returned).
 """
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ def _pick(d: dict, keys: tuple[str, ...]) -> object | None:
     for k in keys:
         if k in d and d[k] not in (None, ""):
             return d[k]
-    # case-insensitive fallback
     low = {str(k).lower(): v for k, v in d.items()}
     for k in keys:
         if k.lower() in low and low[k.lower()] not in (None, ""):
@@ -67,7 +66,6 @@ def _parse_dt(value: object, day: date, tz: ZoneInfo) -> datetime | None:
     s = str(value).strip()
     if not s:
         return None
-    # Try ISO datetime first
     try:
         iso = s.replace("Z", "+00:00")
         dt = datetime.fromisoformat(iso)
@@ -76,7 +74,7 @@ def _parse_dt(value: object, day: date, tz: ZoneInfo) -> datetime | None:
         return dt.astimezone(tz)
     except Exception:
         pass
-    # Try "HH:MM" (optionally with seconds) -> combine with day
+    # 'HH:MM' (возможно с секундами) + дата day
     for fmt in ("%H:%M:%S", "%H:%M", "%H.%M"):
         try:
             from datetime import time as dtime
@@ -85,7 +83,7 @@ def _parse_dt(value: object, day: date, tz: ZoneInfo) -> datetime | None:
             return datetime(day.year, day.month, day.day, t.hour, t.minute, t.second, tzinfo=tz)
         except Exception:
             continue
-    # Try "HH:MM-HH:MM" handled by caller; here fail
+    # 'HH:MM-HH:MM' разбирает вызывающий код
     return None
 
 
@@ -98,7 +96,7 @@ def _split_period(s: str) -> tuple[str, str] | None:
 
 
 def _parse_stankin(raw: dict, *, group: str, day: date, tz: ZoneInfo) -> Lesson | None:
-    """Real stankinapp item: date/startTime/endTime/subject/teacher/type/cabinet.
+    """Stankinapp item: date/startTime/endTime/subject/teacher/type/cabinet.
 
     Returns None if this dict is not in stankin shape (caller falls back to
     generic parsing). building_code stays "" — API has no corpus field,
@@ -122,8 +120,7 @@ def _parse_stankin(raw: dict, *, group: str, day: date, tz: ZoneInfo) -> Lesson 
     cabinet = str(raw.get("cabinet") or "").strip()
     kind = str(raw.get("type") or "").strip()
     teacher = str(raw.get("teacher") or "").strip()
-    # keep teacher/subgroup/slot info in kind-suffix-free fields: kind stays type,
-    # teacher goes to raw only (Lesson has no teacher field; display uses raw).
+    # kind = type из API; teacher — только в raw (у Lesson нет поля teacher).
     return Lesson(
         group=str(raw.get("groupName") or group),
         day=d,

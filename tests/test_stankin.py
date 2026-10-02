@@ -1,4 +1,4 @@
-"""Real stankinapp.ru fixtures (captured 2026-09-23)."""
+"""Фикстуры реальных ответов stankinapp.ru."""
 from datetime import date
 
 from student_bot.buildings import BuildingStore

@@ -1,20 +1,8 @@
 """Места рядом с корпусом: кофейни/столовые/продукты через 2GIS Places.
 
-Проверено живьём 2026-09-28 (названия полей — из реального ответа, не выдуманы):
-  GET https://catalog.api.2gis.com/3.0/items
-    ?key=...&q=столовая&point=lon,lat&radius=1000&page_size=3
-    &fields=items.point,items.address_name,items.rubrics
-  -> {"meta": {"code": 200, ...},
-      "result": {"items": [{"id", "name", "type": "branch",
-                             "point": {"lat", "lon"},
-                             "address_name": "Сущёвская улица, 21 ст8",
-                             "rubrics": [{"name": "Столовые", "kind": "primary", ...}]}],
-                 "total": N}}
-Без key: {"meta": {"code": 400, ...}} — это тоже проверяем (meta.code != 200
-считаем ошибкой, т.к. HTTP при этом может быть 200).
-
-Кэш 24 ч по (округлённые координаты корпуса, запрос) — экономим квоту 2GIS.
-Время пешком — существующим TwoGisRouting.walking, не "на глаз".
+Формат ответа: {"result": {"items": [{"id","name","point","address_name",
+"rubrics"}]}}; ошибка — meta.code != 200 при HTTP 200.
+Кэш 24 ч по (округлённые координаты, запрос).
 """
 from __future__ import annotations
 
@@ -153,7 +141,7 @@ class TwoGisPlaces:
                                        return_exceptions=True)
         for res in results:
             if isinstance(res, asyncio.CancelledError):
-                raise res  # shutdown не глотаем
+                raise res  # отмену (shutdown) пробрасываем
             if isinstance(res, list):
                 found.extend(res)
             # упавшая категория просто пропускается (остальные всё равно покажем)

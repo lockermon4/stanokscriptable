@@ -1,13 +1,11 @@
 """Orchestration: schedule -> first lesson -> building address -> route -> exit plan.
 
-Маршруты — только 2GIS (пешком и метро, машины нет), см. routing.py.
-
-Honest failure modes (no invented times):
+Маршруты — 2GIS (пешком и метро), см. routing.py.
+Режимы отказа:
 - schedule API down -> schedule_failed, schedule shown unavailable
 - unknown building code -> unknown_building=True, no route
 - 2GIS down/empty -> route_failed=True, schedule shown without road time
 - metro not available between points -> walk fallback + metro_fallback=True
-  ("маршрута на метро нет, показываю пешком"), never a fake metro time
 """
 from __future__ import annotations
 
@@ -59,11 +57,10 @@ async def compute_night_exit(
     now: datetime,
     allow_cache: bool = True,
 ) -> NightOutcome:
-    """Метро ночью: езда берётся из moving-суммы (waiting ночью бессмыслен),
+    """Метро ночью: время в пути — moving-сумма (waiting не учитывается),
     старт отсчёта — от open_dt (05:30). См. anchor_to_open."""
     try:
-        # Ночью waiting бессмыслен (закрыто/гнильё) — берём moving-сумму,
-        # фильтр ожиданий и дневной кэш отключаем (max_wait_s=None).
+        # moving-сумма; фильтр ожиданий и дневной кэш отключены (max_wait_s=None)
         options = await routing.metro(from_xy, to_xy, allow_cache=allow_cache,
                                       max_wait_s=None)
     except Exception:
@@ -93,16 +90,16 @@ async def compute_night_exit(
 @dataclass(frozen=True)
 class Window:
     """Окно между парами: from/to — 'HH:MM', minutes — длительность,
-    from_room — кабинет пары ПЕРЕД окном (место ищем рядом с её корпусом)."""
+    from_room — кабинет пары перед окном (место ищут рядом с её корпусом)."""
     from_time: str
     to_time: str
     minutes: int
     from_room: str
-    lesson: Any = None  # Lesson ПЕРЕД окном (для резолва корпуса)
+    lesson: Any = None  # Lesson перед окном (для резолва корпуса)
 
 
 def find_windows(schedule: DaySchedule, min_gap_min: int = 45) -> list[Window]:
-    """Чистая функция: разрывы end->start следующей пары >= порога."""
+    """Разрывы end->start следующей пары >= порога."""
     out: list[Window] = []
     lessons = list(schedule.active_lessons)
     for prev, nxt in zip(lessons, lessons[1:]):
@@ -124,7 +121,7 @@ def _place_json(p) -> dict:
 async def windows_with_places(schedule: DaySchedule, buildings: BuildingStore,
                               places_client, router,
                               min_gap_min: int = 45) -> list[dict]:
-    """Окна + места рядом с корпусом пары ПЕРЕД окном.
+    """Окна + места рядом с корпусом пары перед окном.
     Поиск упал/ничего нет/корпус неизвестен -> places=[], место null у потребителя.
     Кэш 24 ч живёт внутри places_client."""
     out: list[dict] = []
@@ -219,11 +216,11 @@ async def lesson_target(
 
 
 def option_to_route(opt: RouteOption) -> RouteResult:
-    """Первый вариант 2GIS -> RouteResult для compute_exit (реальные данные API)."""
+    """Первый вариант 2GIS -> RouteResult для compute_exit."""
     return RouteResult(
         travel_seconds=opt.duration_s,
         legs=(RouteLeg("2gis-" + opt.mode, opt.duration_s, opt.summary),),
-        is_approximate=False,  # живой ответ API, не топологическая оценка
+        is_approximate=False,  # живой ответ API
         calculated_at=datetime.now(timezone.utc),
         provider="2gis",
     )
@@ -245,13 +242,11 @@ async def build_day_view(
     routing=None,  # TwoGisRouting-like (walking()/metro()); default — модуль routing.py
     home_coords: tuple[float, float] | None = None,  # (lat, lon) from location pin
     allow_cache: bool = True,
-    fresh: bool = False,  # True: расписание мимо дневного кэша (iOS API перечитывает)
+    fresh: bool = False,  # True — расписание мимо дневного кэша
 ) -> DayView:
     tz = ZoneInfo(settings.institution_tz)
     day_iso = day.strftime(settings.schedule_date_format)
-    # Schedule JSON and home geocode are independent -> run in parallel.
-    # If the schedule fails we cancel the stray geocode (no wasted work,
-    # no extra latency on the schedule_failed path).
+    # Расписание и геокодинг дома независимы — выполняем параллельно.
     sched_task = asyncio.ensure_future(schedule_client.get_day_raw(group, day_iso, fresh=fresh))
     geo_task = None
     if home_coords is None and home_address.strip():
@@ -286,7 +281,7 @@ async def build_day_view(
     metro = routing.metro if routing is not None else get_metro_route
     try:
         from_xy = home_coords or (await geo_task if geo_task is not None else None)
-        # Verified building coords (buildings.yaml) skip geocoding entirely.
+        # Координаты корпуса из buildings.yaml не геокодируются.
         to_xy = (b.lat, b.lon) if b.lat is not None and b.lon is not None else await geocoder.geocode(dest_addr)
         if not from_xy or not to_xy:
             return DayView(schedule=schedule, skipped=skipped, target=target, plan=None, route_failed=True)

@@ -43,6 +43,6 @@ def test_morning_text_honest_failures():
     assert "неизвестен" in morning_text(None, unknown_building=True)
     assert "посчитать не получилось" in morning_text(None, route_failed=True)
     t = morning_text(_plan())
-    assert "приблизительная" in t  # OSRM честно помечен
+    assert "приблизительная" in t  # метка приблизительности провайдера
     assert "Расчёт маршрута" in t  # время последнего расчёта показано
     assert "Первая пара: 09:00–10:30 — Матан" in t

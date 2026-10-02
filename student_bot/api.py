@@ -1,19 +1,17 @@
 """iOS HTTP API для Scriptable (локальные уведомления без Telegram).
 
-Переиспользует существующую логику как есть, НЕ дублирует:
+Переиспользует существующую логику:
 - schedule_client / normalize / buildings — расписание и корпуса;
 - service.build_day_view — фокус-пара + план выхода;
 - cards.build_morning/build_evening + format_push_* — схема ответа
-  {title, body, data} (тот самый «задел под iOS-push»);
+  {title, body, data};
 - exit_time.compute_exit / first_relevant_lesson — время выхода;
 - store — настройки, заметки, api-токены.
 
 Свежесть: каждый вызов перечитывает расписание (fresh=True мимо дневного
-кэша) и считает дорогу свежим запросом 2GIS (allow_cache=False). Отдельного
-блокирующего лимита нет: last_calc раз в 30 мин — только шедулер пушей,
-API-слой обслуживает каждый вызов (Scriptable дёргает 2-3 раза в день).
+кэша) и считает дорогу свежим запросом 2GIS (allow_cache=False).
 
-При идущей паре ответ сразу предлагает следующую: сколько ехать до неё
+При идущей паре ответ предлагает следующую: сколько ехать до неё
 (suggest_next) — в today и exit-time.
 """
 from __future__ import annotations
@@ -138,7 +136,7 @@ async def suggest_next(ctx: ApiCtx, u: UserSettings, view: DayView,
         return None
     end = focus.ends_at or (focus.starts_at + timedelta(minutes=90))
     if not (focus.starts_at <= now < end):
-        return None  # не идёт — следующий шаг не навязываем
+        return None  # пара не идёт
     nxt = _next_after(view.schedule, focus)
     if nxt is None:
         return None
@@ -248,8 +246,8 @@ def unavailable(reason: str, detail: str, push: PushMsg) -> dict:
 
 async def target_block(ctx: ApiCtx, u: UserSettings, lesson: Any, day: Any,
                        now: datetime, target_dt: datetime) -> dict:
-    """'Приехать к HH:MM': обратный расчёт + якорь 05:30 (чистая логика та же,
-    что в боте: anchor_to_open). lesson — опорная пара для проверки."""
+    """'Приехать к HH:MM': обратный расчёт + якорь 05:30 (anchor_to_open).
+    lesson — опорная пара для проверки."""
     lang = u.lang
     mode = norm_transport(u.transport)
     fr = _home_coords(u)
@@ -312,7 +310,7 @@ def parse_target_or_400(target_raw: str | None, day: Any, tz) -> tuple[datetime 
 
 async def _windows_json(ctx: ApiCtx, view, u) -> list[dict]:
     """Окна + первое место (place=null, если поиск упал/пуст/корпус неизвестен).
-    Общий лимит 30 с, дальше — пустой список, а не висящий запрос."""
+    Общий лимит 30 с, дальше — пустой список."""
     from .service import windows_with_places
 
     try:

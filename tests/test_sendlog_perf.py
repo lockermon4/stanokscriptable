@@ -157,7 +157,7 @@ def test_show_main_menu_callback_edits_and_clears_inline():
     m = FakeMsg()
     run(show_main_menu(fake_cb(m), "ru"))
     assert len(m.edits) == 1 and m.edits[0][1] is None  # инлайн-кнопки сняты
-    assert m.answers == []  # нового сообщения не надо
+    assert m.answers == []  # новых сообщений нет
 
 
 def test_show_main_menu_callback_edit_fail_sends_new():

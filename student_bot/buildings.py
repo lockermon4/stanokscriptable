@@ -1,11 +1,9 @@
-"""Building directory: code -> exact address. Stored SEPARATELY from routing logic.
+"""Building directory: code -> exact address.
 
-Never guess an unknown building address: lookup returns None and callers
-must say so honestly instead of inventing a route.
-
-Stankin note: /api/schedule has NO corpus field, only `cabinet`.
-Mapping cabinet -> building is an ORDERED regex list from buildings.yaml
-(first match wins); only `confirmed` buildings may be routed.
+lookup returns None for an unknown or unconfirmed building.
+/api/schedule has no corpus field, only `cabinet`; cabinet -> building maps via
+an ordered regex list from buildings.yaml (first match wins). Only `confirmed`
+buildings are routed.
 """
 from __future__ import annotations
 
@@ -70,7 +68,7 @@ class BuildingStore:
 
     def resolve_cabinet(self, cabinet: str) -> tuple[Building | None, bool]:
         """Map `cabinet` -> (Building, heuristic) via ordered regex rules,
-        then legacy prefix rules, then default. Unconfirmed buildings resolve
+        then prefix rules, then default. Unconfirmed buildings resolve
         to None (no routing until confirmed). Empty cabinet -> (None, False)."""
         cab = (cabinet or "").strip()
         if not cab:

@@ -1,7 +1,7 @@
 """Все тексты бота на русском и английском + инлайн-кнопки.
 Язык: UserSettings.lang ("ru"/"en"); новым берётся из Telegram locale.
 
-Чистые функции без состояния (тестируются напрямую). Callback-data короткие,
+Чистые функции без состояния. Callback-data короткие,
 префиксы: set:* (настройки), tr:* (транспорт), buf:* (запас), ntf* (уведомления),
 lang:* (язык), note:*/nadd:*|nview:*|ndel:* (заметки), op:cancel (отмена ввода).
 """
@@ -307,7 +307,7 @@ def notes_menu_buttons(lang: str):
 
 
 def note_date_buttons(lang: str, prefix: str):
-    """prefix: nadd | nview | ndel. RU-метки на русском (фикс)."""
+    """prefix: nadd | nview | ndel. RU-метки всегда на русском."""
     if lang == EN:
         rows = [
             [("Today", f"{prefix}:today"), ("Tomorrow", f"{prefix}:tomorrow")],
@@ -574,7 +574,7 @@ def metro_gray(lang: str) -> str:
 
 
 def leave_now_line(lang: str, icon: str, arrival, lesson) -> str:
-    """Строка 'приедешь в HH:MM — вердикт' для кнопки 'Выйти сейчас' (чистая)."""
+    """Строка 'приедешь в HH:MM — вердикт' для кнопки 'Выйти сейчас'."""
     from datetime import timedelta
 
     if arrival is None:

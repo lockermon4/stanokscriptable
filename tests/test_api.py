@@ -149,7 +149,7 @@ def test_today_ongoing_no_next_gives_null():
     u = make_user(ctx.store)
     p = run(today_payload(ctx, u, datetime(2026, 9, 28, 9, 0, tzinfo=TZ)))
     assert p["focus"]["ongoing"] is True
-    assert p["suggest_next"] is None  # следующей нет — null, не выдумка
+    assert p["suggest_next"] is None  # следующей пары нет -> null
 
 
 def test_today_no_group_and_schedule_down():
@@ -163,7 +163,7 @@ def test_today_no_group_and_schedule_down():
     u2 = make_user(ctx2.store)
     p2 = run(today_payload(ctx2, u2, datetime(2026, 9, 28, 7, 0, tzinfo=TZ)))
     assert p2["status"] == "unavailable" and p2["reason"] == "schedule_failed"
-    assert p2["push"]["data"] == {"kind": "today", "ok": False}  # честно, без пар
+    assert p2["push"]["data"] == {"kind": "today", "ok": False}  # ok=False, пустой день
 
 
 # ---------- tomorrow: структура + заметка ----------
