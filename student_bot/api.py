@@ -9,7 +9,7 @@
 - store — настройки, заметки, api-токены.
 
 Свежесть: каждый вызов перечитывает расписание (fresh=True мимо дневного
-кэша) и считает дорогу свежим запросом 2GIS (use_cache=False). Отдельного
+кэша) и считает дорогу свежим запросом 2GIS (allow_cache=False). Отдельного
 блокирующего лимита нет: last_calc раз в 30 мин — только шедулер пушей,
 API-слой обслуживает каждый вызов (Scriptable дёргает 2-3 раза в день).
 
@@ -97,7 +97,7 @@ def _building_of(ctx: ApiCtx, lesson: Any) -> tuple[float | None, float | None, 
 
 async def _route_travel(ctx: ApiCtx, u: UserSettings, fr: tuple[float, float],
                         to: tuple[float, float]) -> tuple[int | None, str, bool]:
-    """Свежая дорога (use_cache=False). Возвращает (секунды, summary, metro_fallback)."""
+    """Свежая дорога (allow_cache=False). Возвращает (секунды, summary, metro_fallback)."""
     from .routing import NoMetroError
     from .store import norm_transport
 
@@ -105,13 +105,13 @@ async def _route_travel(ctx: ApiCtx, u: UserSettings, fr: tuple[float, float],
     try:
         if mode == "metro":
             try:
-                opts = await ctx.routing.metro(fr, to, use_cache=False)
+                opts = await ctx.routing.metro(fr, to, allow_cache=False)
             except NoMetroError:
-                opts = await ctx.routing.walking(fr, to, use_cache=False)
+                opts = await ctx.routing.walking(fr, to, allow_cache=False)
                 return (opts[0].duration_s if opts else None,
                         opts[0].summary if opts else "", True)
         else:
-            opts = await ctx.routing.walking(fr, to, use_cache=False)
+            opts = await ctx.routing.walking(fr, to, allow_cache=False)
         if not opts:
             return None, "", False
         return opts[0].duration_s, opts[0].summary, False
@@ -232,13 +232,13 @@ def _focus_json(u: UserSettings, view: DayView, now: datetime) -> dict | None:
 
 async def _fresh_view(ctx: ApiCtx, u: UserSettings, day: Any, now: datetime,
                       for_today: bool) -> DayView:
-    """Свежее расписание (fresh=True) + свежая дорога (use_cache=False)."""
+    """Свежее расписание (fresh=True) + свежая дорога (allow_cache=False)."""
     return await build_day_view(
         settings=ctx.settings, schedule_client=ctx.schedule_client,
         buildings=ctx.buildings, geocoder=ctx.geocoder, group=u.group, day=day,
         now=now, home_address=u.home_address, transport=u.transport,
         buffer_min=u.buffer_min, for_today=for_today, routing=ctx.routing,
-        home_coords=_home_coords(u), use_cache=False, fresh=True)
+        home_coords=_home_coords(u), allow_cache=False, fresh=True)
 
 
 def unavailable(reason: str, detail: str, push: PushMsg) -> dict:
@@ -268,11 +268,11 @@ async def target_block(ctx: ApiCtx, u: UserSettings, lesson: Any, day: Any,
     try:
         if mode == "metro":
             try:
-                opts = await ctx.routing.metro(fr, (lat, lon), use_cache=False)
+                opts = await ctx.routing.metro(fr, (lat, lon), allow_cache=False)
             except NoMetroError:
-                opts = await ctx.routing.walking(fr, (lat, lon), use_cache=False)
+                opts = await ctx.routing.walking(fr, (lat, lon), allow_cache=False)
         else:
-            opts = await ctx.routing.walking(fr, (lat, lon), use_cache=False)
+            opts = await ctx.routing.walking(fr, (lat, lon), allow_cache=False)
     except Exception as e:
         log.warning("api target route failed: %s", e)
         opts = []
@@ -288,7 +288,7 @@ async def target_block(ctx: ApiCtx, u: UserSettings, lesson: Any, day: Any,
            "travel_txt": "~" + format_duration(travel_s)}
     if kind == "miss" and mode == "metro":
         try:
-            w = await ctx.routing.walking(fr, (lat, lon), use_cache=False)
+            w = await ctx.routing.walking(fr, (lat, lon), allow_cache=False)
         except Exception:
             w = []
         if w:

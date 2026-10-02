@@ -44,13 +44,13 @@ class FakeRouting:
         return RouteOption(mode=mode, duration_s=self.secs, distance_m=5000,
                            summary=f"{mode} {self.secs // 60} мин")
 
-    async def walking(self, fr, to, use_cache=True):
+    async def walking(self, fr, to, allow_cache=True):
         self.calls.append("walk")
         if self.fail_walk:
             raise RuntimeError("down")
         return [self._opt("walk")]
 
-    async def metro(self, fr, to, use_cache=True):
+    async def metro(self, fr, to, allow_cache=True):
         self.calls.append("metro")
         if self.fail_metro:
             raise RuntimeError("down")

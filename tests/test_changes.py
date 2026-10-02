@@ -128,11 +128,11 @@ def _hub(tmp_path):
             return (55.63, 37.52)
 
     class Routing:
-        async def walking(self, fr, to, use_cache=True):
+        async def walking(self, fr, to, allow_cache=True):
             from student_bot.routing import RouteOption
             return [RouteOption(mode="walk", duration_s=600, summary="10 мин")]
 
-        async def metro(self, fr, to, use_cache=True):
+        async def metro(self, fr, to, allow_cache=True):
             from student_bot.routing import RouteOption
             return [RouteOption(mode="metro", duration_s=1200, summary="20 мин")]
 

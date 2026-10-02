@@ -52,12 +52,12 @@ class FakeRouting:
     def __init__(self, secs=1260):
         self.secs = secs
 
-    async def walking(self, fr, to, use_cache=True):
+    async def walking(self, fr, to, allow_cache=True):
         from student_bot.routing import RouteOption
         return [RouteOption(mode="walk", duration_s=self.secs, distance_m=5000,
                             summary="21 мин пешком")]
 
-    async def metro(self, fr, to, use_cache=True):
+    async def metro(self, fr, to, allow_cache=True):
         from student_bot.routing import RouteOption
         return [RouteOption(mode="metro", duration_s=self.secs, distance_m=8000,
                             transfers=1, walk_before_s=300, walk_after_s=240,

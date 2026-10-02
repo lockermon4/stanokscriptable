@@ -43,7 +43,7 @@ class FakeRouter:
     def __init__(self):
         self.calls = 0
 
-    async def walking(self, fr, to, use_cache=True):
+    async def walking(self, fr, to, allow_cache=True):
         from student_bot.routing import RouteOption
         self.calls += 1
         return [RouteOption(mode="walk", duration_s=180, summary="3 мин")]  # 3 мин

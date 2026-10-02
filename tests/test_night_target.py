@@ -38,13 +38,13 @@ class FakeRouting:
         self.walk_s = walk_s
         self.metro_kwargs = None
 
-    async def metro(self, fr, to, use_cache=True, max_wait_s=1800):
-        self.metro_kwargs = {"use_cache": use_cache, "max_wait_s": max_wait_s}
+    async def metro(self, fr, to, allow_cache=True, max_wait_s=1800):
+        self.metro_kwargs = {"allow_cache": allow_cache, "max_wait_s": max_wait_s}
         base = metro_opt(self.metro_s).raw["movements"]
         return [RouteOption(mode="metro", duration_s=self.metro_s + 60,
                             summary="m", raw={"movements": base})]
 
-    async def walking(self, fr, to, use_cache=True):
+    async def walking(self, fr, to, allow_cache=True):
         return [RouteOption(mode="walk", duration_s=self.walk_s, summary="w")]
 
 
@@ -108,10 +108,10 @@ def test_night_no_data_when_metro_down():
     from student_bot.service import compute_night_exit
 
     class Dead:
-        async def metro(self, fr, to, use_cache=True):
+        async def metro(self, fr, to, allow_cache=True):
             raise RuntimeError("down")
 
-        async def walking(self, fr, to, use_cache=True):
+        async def walking(self, fr, to, allow_cache=True):
             raise RuntimeError("down")
 
     out = run(compute_night_exit(

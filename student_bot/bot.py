@@ -26,7 +26,7 @@ from .exit_time import (anchor_to_open, compute_exit, first_relevant_lesson, for
 from .geocode import NominatimGeocoder
 from .metro_hours import OPEN_H, OPEN_M, metro_state
 from .normalize import normalize_day, normalize_groups
-from .notifications import morning_notify_time, parse_hhmm
+from .notifications import parse_hhmm, should_send_morning
 from .routing import NoMetroError, RoutingError, TwoGisRouting
 from .places import TwoGisPlaces
 from .schedule_client import ScheduleClient
@@ -184,12 +184,15 @@ async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict,
     """Every 60 s. Evening: schedule+note (1 API call, no routing).
     Morning: cheap schedule-only check for first lesson; full routing calc
     (2GIS, first option) at most every 30 min per user and only within 4 h
-    before the first lesson. Sent-flags persist in DB (no dupes on restart).
+    before the first lesson. Send-window is checked every tick using the
+    cached view (recomputed at most every 30 min). Sent-flags persist in DB
+    (no dupes on restart).
 
     last_calc is passed explicitly (NOT inside deps): deps is splatted into
     build_day_view(), which rejects unknown kwargs (see TypeError crash)."""
     tz = ZoneInfo(settings.institution_tz)
     sched_client: ScheduleClient = deps["schedule_client"]
+    morn_views: dict[int, Any] = {}
     while True:
         try:
             now = datetime.now(tz)
@@ -235,14 +238,21 @@ async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict,
                 if not (timedelta(0) <= (first.starts_at - now) <= timedelta(hours=4)):
                     continue
                 if time.monotonic() - last_calc.get(u.user_id, 0) < 30 * 60:
-                    continue
-                last_calc[u.user_id] = time.monotonic()
-                view = await build_day_view(day=today, now=now, for_today=True, **kw)
+                    view = morn_views.get(u.user_id)
+                    if view is None:
+                        continue
+                else:
+                    last_calc[u.user_id] = time.monotonic()
+                    view = await build_day_view(day=today, now=now, for_today=True, **kw)
+                    morn_views[u.user_id] = view
                 if view.plan is None:
                     continue
-                notify_at = morning_notify_time(view.plan, u.morning_min_before_exit)
-                # fresh recalc right before sending: never after exit
-                if notify_at <= now < view.plan.exit_at and (now - notify_at) < timedelta(minutes=2):
+                # Время пинга — пользовательский отступ morning_min_before_exit.
+                # Окно проверяется каждый тик (по кэшированному view), а не
+                # только в момент тяжёлого пересчёта: раньше пересчёт был
+                # раз в 30 мин, окно — 2 мин, и они почти не совпадали.
+                # Строго до выхода, без дублей (should_send_morning).
+                if should_send_morning(now, view.plan, u.morning_min_before_exit):
                     note = store.get_note(u.user_id, today.isoformat())
                     text = format_telegram_morning(morning_card(view, note), u.lang)
                     if night_metro:
@@ -272,6 +282,7 @@ async def main() -> None:
     sched_client = ScheduleClient(settings)
     geocoder = NominatimGeocoder(settings)
     routing = TwoGisRouting()  # ключ из $GIS_API_KEY; только пешком и метро
+    routing.attach_cache(store)  # персистентный кэш маршрутов (route_cache)
     places_client = TwoGisPlaces()  # тот же ключ; кофейни/столовые рядом, кэш 24 ч
     deps = {"schedule_client": sched_client, "buildings": buildings, "geocoder": geocoder,
             "routing": routing}
@@ -312,18 +323,18 @@ async def main() -> None:
             return None
 
     async def fetch_mode_travel(sess: dict, mode: str,
-                                use_cache: bool = True) -> tuple[int | None, str, bool]:
+                                allow_cache: bool = True) -> tuple[int | None, str, bool]:
         """Свежая дорога по режиму: (travel_s, travel_txt, used_walk_fallback).
         Метро недоступно -> пешком с флагом (честно, не молча)."""
         try:
             if mode == "metro":
                 try:
-                    opts = await routing.metro(sess["from"], sess["to"], use_cache=use_cache)
+                    opts = await routing.metro(sess["from"], sess["to"], allow_cache=allow_cache)
                 except NoMetroError:
-                    opts = await routing.walking(sess["from"], sess["to"], use_cache=use_cache)
+                    opts = await routing.walking(sess["from"], sess["to"], allow_cache=allow_cache)
                     return (opts[0].duration_s, opts[0].summary, True) if opts else (None, "", True)
             else:
-                opts = await routing.walking(sess["from"], sess["to"], use_cache=use_cache)
+                opts = await routing.walking(sess["from"], sess["to"], allow_cache=allow_cache)
             if not opts:
                 return None, "", False
             return opts[0].duration_s, opts[0].summary, False
@@ -1165,7 +1176,7 @@ async def main() -> None:
             return
 
         # --- маршруты 2GIS: тип -> варианты -> детали + сохранить; избранное ---
-        async def show_options(sess: dict, use_cache: bool) -> None:
+        async def show_options(sess: dict, allow_cache: bool) -> None:
             """Запросить варианты по sess[from/to/mode], показать кнопками.
             Ночью (01:00–05:30) + метро + известная пара: якорный расчёт от 05:30
             (compute_night_exit), а не мусорное ожидание и не пешие варианты.
@@ -1183,7 +1194,7 @@ async def main() -> None:
                 out = await compute_night_exit(
                     lesson_start=lesson.starts_at, from_xy=sess["from"], to_xy=sess["to"],
                     buffer_min=sess.get("buffer", 10), routing=routing,
-                    open_dt=open_dt, now=now, use_cache=use_cache)
+                    open_dt=open_dt, now=now, allow_cache=allow_cache)
                 sess["closed"] = True
                 sess["options"] = []
                 await safe_edit(night_exit_text(u.lang, sess["lesson_line"], out),
@@ -1194,16 +1205,16 @@ async def main() -> None:
                 if mode == "metro" and state != "closed":
                     try:
                         options = await routing.metro(sess["from"], sess["to"],
-                                                      use_cache=use_cache)
+                                                      allow_cache=allow_cache)
                     except NoMetroError:
                         options = await routing.walking(sess["from"], sess["to"],
-                                                        use_cache=use_cache)
+                                                        allow_cache=allow_cache)
                         sess["fallback"] = True
                     else:
                         sess["fallback"] = False
                 else:
                     options = await routing.walking(sess["from"], sess["to"],
-                                                    use_cache=use_cache)
+                                                    allow_cache=allow_cache)
                     sess["fallback"] = False
             except RoutingError:
                 await safe_edit(route_failed(u.lang))
@@ -1227,7 +1238,7 @@ async def main() -> None:
                 await safe_edit(route_session_expired(fresh().lang))
                 return
             sess["mode"] = data[4:]
-            await show_options(sess, use_cache=True)
+            await show_options(sess, allow_cache=True)
             return
         if data.startswith("rtv:"):
             sess = route_sessions.get(uid)
@@ -1263,7 +1274,7 @@ async def main() -> None:
             lesson = sess.get("lesson")
             lines = [sess.get("lesson_line") or ("🏃 Leaving now" if en else "🏃 Выйти сейчас")]
             try:
-                w = await routing.walking(fr, to, use_cache=False)
+                w = await routing.walking(fr, to, allow_cache=False)
                 w_arr = now + timedelta(seconds=w[0].duration_s) if w else None
             except RoutingError:
                 w_arr = None
@@ -1277,7 +1288,7 @@ async def main() -> None:
                 lines.append(metro_closed(u.lang))
             else:
                 try:
-                    m = await routing.metro(fr, to, use_cache=False)
+                    m = await routing.metro(fr, to, allow_cache=False)
                     m_arr = now + timedelta(seconds=m[0].duration_s) if m else None
                 except RoutingError:
                     m_arr = None
@@ -1337,7 +1348,7 @@ async def main() -> None:
                                    "lesson_line": fav.name, "lesson": None,
                                    "buffer": 10, "mode": fav.transport_type,
                                    "options": [], "fallback": False}
-            await show_options(route_sessions[uid], use_cache=False)  # свежее время, не из кэша
+            await show_options(route_sessions[uid], allow_cache=False)  # свежее время, не из кэша
             return
         if data.startswith("favdel:"):
             try:

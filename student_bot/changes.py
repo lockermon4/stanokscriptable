@@ -185,7 +185,7 @@ async def handle_confirmed(bot, settings, store, deps, group: str, day_iso: str,
                     group=u.group, day=day, now=now, home_address=u.home_address,
                     transport=u.transport, buffer_min=u.buffer_min,
                     for_today=(day == now.date()), routing=deps.get("routing"),
-                    home_coords=home_coords_of(u), use_cache=False, fresh=True)
+                    home_coords=home_coords_of(u), allow_cache=True, fresh=True)
                 from .bot import morning_card
 
                 await bot.send_message(

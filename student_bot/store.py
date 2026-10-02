@@ -166,6 +166,11 @@ class Store:
                 f"""CREATE TABLE IF NOT EXISTS api_tokens(
                 user_id {int_pk} PRIMARY KEY, token TEXT, created_at TEXT)"""
             )
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS route_cache(
+                key TEXT PRIMARY KEY, payload TEXT NOT NULL,
+                fetched_at {ts})""".replace("{ts}", "DOUBLE PRECISION" if self._pg else "REAL")
+            )
             self._init_schedule_tables(c)
 
     def _row_user(self, r) -> UserSettings:
@@ -226,6 +231,25 @@ class Store:
         with self._conn() as c:
             c.execute("DELETE FROM sent WHERE user_id=? AND day=? AND kind=?",
                       (user_id, day, kind))
+
+    # route_cache: кэш маршрутов 2GIS (payload — JSON опций или {"error":…}).
+    # TTL-решение принимает routing.py; тут только хранение.
+    def get_route_cache(self, key: str) -> dict | None:
+        with self._conn() as c:
+            r = c.execute("SELECT payload, fetched_at FROM route_cache WHERE key=?",
+                          (key,)).fetchone()
+        return {"payload": r["payload"], "fetched_at": float(r["fetched_at"])} if r else None
+
+    def put_route_cache(self, key: str, payload: str, fetched_at: float) -> None:
+        with self._conn() as c:
+            c.execute(
+                """INSERT INTO route_cache(key, payload, fetched_at) VALUES(?,?,?)
+                ON CONFLICT(key) DO UPDATE SET payload=excluded.payload,
+                fetched_at=excluded.fetched_at""",
+                (key, payload, fetched_at))
+            # чистим далеко просроченное (макс TTL 6 ч + день)
+            c.execute("DELETE FROM route_cache WHERE fetched_at < ?",
+                      (fetched_at - 86400 * 7,))
 
     # notes: day = YYYY-MM-DD
     def get_note(self, user_id: int, day: str) -> str:

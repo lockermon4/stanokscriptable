@@ -111,7 +111,7 @@ def test_empty_walk_is_honest_error(monkeypatch):
         run(r.walking((55.0, 37.0), (55.1, 37.1)))
 
 
-# ---------- кэш: ключ, TTL, use_cache=False ----------
+# ---------- кэш: ключ, TTL, allow_cache=False ----------
 
 def test_cache_key_rounds_to_4():
     assert cache_key((55.123456, 37.123456), (55.7, 37.5), "walk") == \
@@ -159,7 +159,7 @@ def test_fresh_bypass_for_favorites(monkeypatch):
         return payload_ok()
     r = ok_client(h)
     run(r.metro((55.0, 37.0), (55.1, 37.1)))
-    run(r.metro((55.0, 37.0), (55.1, 37.1), use_cache=False))  # избранное: свежий запрос
+    run(r.metro((55.0, 37.0), (55.1, 37.1), allow_cache=False))  # избранное: свежий запрос
     assert len(calls) == 2
 
 

@@ -57,14 +57,14 @@ async def compute_night_exit(
     routing,
     open_dt: datetime,
     now: datetime,
-    use_cache: bool = True,
+    allow_cache: bool = True,
 ) -> NightOutcome:
     """Метро ночью: езда берётся из moving-суммы (waiting ночью бессмыслен),
     старт отсчёта — от open_dt (05:30). См. anchor_to_open."""
     try:
         # Ночью waiting бессмыслен (закрыто/гнильё) — берём moving-сумму,
         # фильтр ожиданий и дневной кэш отключаем (max_wait_s=None).
-        options = await routing.metro(from_xy, to_xy, use_cache=use_cache,
+        options = await routing.metro(from_xy, to_xy, allow_cache=allow_cache,
                                       max_wait_s=None)
     except Exception:
         return NightOutcome(kind="no_data")
@@ -77,7 +77,7 @@ async def compute_night_exit(
         return NightOutcome(kind=kind, exit_at=exit_at, arrival_at=arrival_at, travel_s=travel_s)
     walk_exit = walk_travel = walk_arr = None
     try:
-        walk_opts = await routing.walking(from_xy, to_xy, use_cache=use_cache)
+        walk_opts = await routing.walking(from_xy, to_xy, allow_cache=allow_cache)
     except Exception:
         walk_opts = []
     if walk_opts:
@@ -244,7 +244,7 @@ async def build_day_view(
     for_today: bool,
     routing=None,  # TwoGisRouting-like (walking()/metro()); default — модуль routing.py
     home_coords: tuple[float, float] | None = None,  # (lat, lon) from location pin
-    use_cache: bool = True,
+    allow_cache: bool = True,
     fresh: bool = False,  # True: расписание мимо дневного кэша (iOS API перечитывает)
 ) -> DayView:
     tz = ZoneInfo(settings.institution_tz)
@@ -293,12 +293,12 @@ async def build_day_view(
         metro_fallback = False
         if mode == "metro":
             try:
-                options = await metro(from_xy, to_xy, use_cache=use_cache)
+                options = await metro(from_xy, to_xy, allow_cache=allow_cache)
             except NoMetroError:
-                options = await walk(from_xy, to_xy, use_cache=use_cache)
+                options = await walk(from_xy, to_xy, allow_cache=allow_cache)
                 metro_fallback = True
         else:
-            options = await walk(from_xy, to_xy, use_cache=use_cache)
+            options = await walk(from_xy, to_xy, allow_cache=allow_cache)
         if not options:
             return DayView(schedule=schedule, skipped=skipped, target=target, plan=None, route_failed=True)
         route = option_to_route(options[0])
