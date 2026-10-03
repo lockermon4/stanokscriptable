@@ -226,6 +226,11 @@ def option_to_route(opt: RouteOption) -> RouteResult:
     )
 
 
+async def _await_route(coro, timeout_s: float | None):
+    """Таймаут задан — ограничивает время на 2GIS (ветка уведомлений)."""
+    return await coro if timeout_s is None else await asyncio.wait_for(coro, timeout_s)
+
+
 async def build_day_view(
     *,
     settings: Settings,
@@ -243,6 +248,8 @@ async def build_day_view(
     home_coords: tuple[float, float] | None = None,  # (lat, lon) from location pin
     allow_cache: bool = True,
     fresh: bool = False,  # True — расписание мимо дневного кэша
+    need_route: bool = True,  # False — расписание без дороги (вечерний пинг)
+    route_timeout_s: float | None = None,  # лимит на 2GIS (ветка уведомлений)
 ) -> DayView:
     tz = ZoneInfo(settings.institution_tz)
     day_iso = day.strftime(settings.schedule_date_format)
@@ -262,6 +269,8 @@ async def build_day_view(
     target = first_relevant_lesson(schedule, now.astimezone(tz)) if for_today else first_lesson_of_day(schedule)
     if target is None:
         return DayView(schedule=schedule, skipped=skipped, target=None, plan=None)
+    if not need_route:
+        return DayView(schedule=schedule, skipped=skipped, target=target, plan=None)
     has_home = bool(home_address.strip()) or home_coords is not None
     if not has_home:
         return DayView(schedule=schedule, skipped=skipped, target=target, plan=None, route_failed=True)
@@ -288,12 +297,12 @@ async def build_day_view(
         metro_fallback = False
         if mode == "metro":
             try:
-                options = await metro(from_xy, to_xy, allow_cache=allow_cache)
+                options = await _await_route(metro(from_xy, to_xy, allow_cache=allow_cache), route_timeout_s)
             except NoMetroError:
-                options = await walk(from_xy, to_xy, allow_cache=allow_cache)
+                options = await _await_route(walk(from_xy, to_xy, allow_cache=allow_cache), route_timeout_s)
                 metro_fallback = True
         else:
-            options = await walk(from_xy, to_xy, allow_cache=allow_cache)
+            options = await _await_route(walk(from_xy, to_xy, allow_cache=allow_cache), route_timeout_s)
         if not options:
             return DayView(schedule=schedule, skipped=skipped, target=target, plan=None, route_failed=True)
         route = option_to_route(options[0])

@@ -3,7 +3,9 @@ from zoneinfo import ZoneInfo
 
 from student_bot.exit_time import compute_exit
 from student_bot.models import DaySchedule, Lesson
-from student_bot.notifications import evening_text, morning_notify_time, morning_text, should_send_morning
+from student_bot.notifications import (evening_text, morning_notify_time, morning_text,
+                                        should_send_morning, should_send_morning_no_route,
+                                        morning_no_route_window, MORNING_NO_ROUTE_TRAVEL_MIN)
 from student_bot.routing_base import RouteResult
 
 TZ = ZoneInfo("Europe/Moscow")
@@ -18,6 +20,18 @@ def _plan():
                         calculated_at=datetime(2026, 9, 24, 7, 0, tzinfo=TZ))
     now = datetime(2026, 9, 24, 7, 0, tzinfo=TZ)
     return compute_exit(les, route, 10, now)
+
+
+def test_morning_no_route_window_before_lesson():
+    assert MORNING_NO_ROUTE_TRAVEL_MIN == 45
+    start = datetime(2026, 9, 24, 9, 0, tzinfo=TZ)
+    # lead=60, buffer=10 -> окно [09:00-(45+10+60), 09:00-(45+10)) = [07:05, 08:05)
+    ws, we = morning_no_route_window(start, 60, 10)
+    assert ws == datetime(2026, 9, 24, 7, 5, tzinfo=TZ)
+    assert we == datetime(2026, 9, 24, 8, 5, tzinfo=TZ) and we <= start
+    assert should_send_morning_no_route(datetime(2026, 9, 24, 7, 5, tzinfo=TZ), start, 60, 10) is True
+    assert should_send_morning_no_route(datetime(2026, 9, 24, 7, 0, tzinfo=TZ), start, 60, 10) is False
+    assert should_send_morning_no_route(datetime(2026, 9, 24, 8, 30, tzinfo=TZ), start, 60, 10) is False
 
 
 def test_morning_window_never_after_exit():

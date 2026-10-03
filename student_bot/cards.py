@@ -172,8 +172,10 @@ def format_telegram_morning(d: MorningData, lang: str = "ru") -> str:
         lines.append("⚠️ Building address unknown — exit time not calculated." if en else
                      "⚠️ Адрес корпуса неизвестен — время выхода не посчитано.")
     else:
-        lines.append("⚠️ Couldn't calculate the route — leave with spare time." if en else
-                     "⚠️ Дорогу посчитать не получилось — выходите с запасом.")
+        lines.append("🚇 2GIS isn't responding, route not calculated. The timetable below is "
+                     "correct — plan the trip yourself." if en else
+                     "🚇 2GIS сейчас не отвечает, маршрут не посчитал. Расписание ниже верное — "
+                     "дорогу прикинь сам.")
     if d.note:
         lines.append(f"🎒 Take: {d.note}" if en else f"🎒 Взять: {d.note}")
     return "\n".join(lines)

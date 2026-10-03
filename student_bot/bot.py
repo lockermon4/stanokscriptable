@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import logging
 import os
 import re
 import time
@@ -26,7 +27,7 @@ from .exit_time import (anchor_to_open, compute_exit, first_relevant_lesson, for
 from .geocode import NominatimGeocoder
 from .metro_hours import OPEN_H, OPEN_M, metro_state
 from .normalize import normalize_day, normalize_groups
-from .notifications import parse_hhmm, should_send_morning
+from .notifications import parse_hhmm, should_send_morning, should_send_morning_no_route
 from .routing import NoMetroError, RoutingError, TwoGisRouting
 from .places import TwoGisPlaces
 from .schedule_client import ScheduleClient
@@ -56,6 +57,11 @@ from .texts import (MENU_LEAVE, MENU_NOTES, MENU_SETTINGS, MENU_TODAY, MENU_TOMO
                      addr_pick_buttons, weather_line, window_line, places_buttons,
                      places_alternatives_text, ikb)
 from .address_check import format_confirm, match_candidate, parse_address
+
+log = logging.getLogger("bot")
+# Таймаут обращения к 2GIS в ветке утреннего уведомления (сек): при недоступности
+# API сборка быстро уходит в сообщение без строки выхода.
+MORNING_ROUTE_TIMEOUT_S = 8.0
 
 
 def kb_for(lang: str) -> ReplyKeyboardMarkup:
@@ -187,6 +193,11 @@ async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict,
     cached view (recomputed at most every 30 min). Sent-flags persist in DB
     (no dupes on restart).
 
+    Routing is capped at MORNING_ROUTE_TIMEOUT_S. If the schedule is obtained
+    but the route is not (2GIS down/timeout, or unknown building), the morning
+    ping still goes out — schedule without the exit-time line — using a
+    lesson-anchored window (should_send_morning_no_route).
+
     last_calc is passed explicitly (NOT inside deps): deps is splatted into
     build_day_view(), which rejects unknown kwargs (see TypeError crash)."""
     tz = ZoneInfo(settings.institution_tz)
@@ -214,7 +225,9 @@ async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict,
                     tomorrow = now.date() + timedelta(days=1)
                     key_day = tomorrow.isoformat()
                     if not store.was_sent(u.user_id, key_day, "eve"):
-                        view = await build_day_view(day=tomorrow, now=now, for_today=False, **kw)
+                        # Вечером нужны только расписание и заметка — 2GIS не дёргаем.
+                        view = await build_day_view(day=tomorrow, now=now, for_today=False,
+                                                    need_route=False, **kw)
                         note = store.get_note(u.user_id, key_day)
                         card = evening_failed(key_day) if view.schedule_failed \
                             else build_evening(view.schedule, note)
@@ -242,15 +255,34 @@ async def scheduler_loop(bot: Bot, settings: Settings, store: Store, deps: dict,
                         continue
                 else:
                     last_calc[u.user_id] = time.monotonic()
-                    view = await build_day_view(day=today, now=now, for_today=True, **kw)
+                    # Короткий таймаут на 2GIS: при недоступности API быстро
+                    # переходим к сообщению без строки выхода.
+                    view = await build_day_view(day=today, now=now, for_today=True,
+                                                route_timeout_s=MORNING_ROUTE_TIMEOUT_S, **kw)
                     morn_views[u.user_id] = view
+                if view.schedule_failed:
+                    continue
+                note = store.get_note(u.user_id, today.isoformat())
+                # Расписание есть, маршрута нет (2GIS упал/таймаут/корпус неизвестен):
+                # отправляем по окну «до выхода» без посчитанного маршрута.
                 if view.plan is None:
+                    if not (view.route_failed or view.unknown_building):
+                        continue
+                    if should_send_morning_no_route(now, first.starts_at,
+                                                    u.morning_min_before_exit, u.buffer_min):
+                        text = format_telegram_morning(morning_card(view, note), u.lang)
+                        if night_metro:
+                            text += "\n" + metro_closed(u.lang)
+                        await bot.send_message(u.user_id, text)
+                        store.mark_sent(u.user_id, today.isoformat(), "morn")
+                        reason = "корпус без адреса" if view.unknown_building else "2GIS недоступен"
+                        log.info("маршрут не получен (%s), отправлено расписание без "
+                                 "маршрута: uid=%s", reason, u.user_id)
                     continue
                 # Время пинга = пользовательский отступ morning_min_before_exit;
                 # окно проверяется каждый тик по кэшированному view
                 # (тяжёлый пересчёт при этом — не чаще раза в 30 мин).
                 if should_send_morning(now, view.plan, u.morning_min_before_exit):
-                    note = store.get_note(u.user_id, today.isoformat())
                     text = format_telegram_morning(morning_card(view, note), u.lang)
                     if night_metro:
                         text += "\n" + metro_closed(u.lang)

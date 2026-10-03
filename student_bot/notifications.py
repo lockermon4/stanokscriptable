@@ -76,6 +76,25 @@ def should_send_morning(now: datetime, plan: ExitPlan | None, minutes_before_exi
     return notify_at <= now < plan.exit_at
 
 
+# Дорога без маршрута: время выхода в сообщении не показывается, константа
+# задаёт только момент пинга (чтобы он пришёл раньше реального выхода).
+MORNING_NO_ROUTE_TRAVEL_MIN = 45
+
+
+def morning_no_route_window(lesson_start: datetime, minutes_before_exit: int,
+                            buffer_min: int = 0) -> tuple[datetime, datetime]:
+    """(начало окна, конец) для пинга без посчитанного маршрута."""
+    head_start = lesson_start - timedelta(minutes=MORNING_NO_ROUTE_TRAVEL_MIN + buffer_min)
+    return head_start - timedelta(minutes=minutes_before_exit), head_start
+
+
+def should_send_morning_no_route(now: datetime, lesson_start: datetime,
+                                 minutes_before_exit: int, buffer_min: int = 0) -> bool:
+    """Пинг по расписанию без маршрута: окно morning_no_route_window."""
+    start, end = morning_no_route_window(lesson_start, minutes_before_exit, buffer_min)
+    return start <= now < end
+
+
 def morning_notify_time(plan: ExitPlan, minutes_before_exit: int) -> datetime:
     from datetime import timedelta
 

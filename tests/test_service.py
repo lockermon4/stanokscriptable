@@ -32,11 +32,12 @@ class FakeGeo:
 class FakeRouting:
     """TwoGisRouting-like: walking()/metro() с флагами падения."""
 
-    def __init__(self, fail_walk=False, fail_metro=False, no_metro=False, secs=1200):
+    def __init__(self, fail_walk=False, fail_metro=False, no_metro=False, secs=1200, hang=False):
         self.fail_walk = fail_walk
         self.fail_metro = fail_metro
         self.no_metro = no_metro
         self.secs = secs
+        self.hang = hang  # имитация недоступного API: ответ висит
         self.calls: list[str] = []
 
     def _opt(self, mode):
@@ -44,10 +45,15 @@ class FakeRouting:
         return RouteOption(mode=mode, duration_s=self.secs, distance_m=5000,
                            summary=f"{mode} {self.secs // 60} мин")
 
+    async def _maybe_hang(self):
+        if self.hang:
+            await asyncio.sleep(3600)
+
     async def walking(self, fr, to, allow_cache=True):
         self.calls.append("walk")
         if self.fail_walk:
             raise RuntimeError("down")
+        await self._maybe_hang()
         return [self._opt("walk")]
 
     async def metro(self, fr, to, allow_cache=True):
@@ -57,6 +63,7 @@ class FakeRouting:
         if self.no_metro:
             from student_bot.routing import NoMetroError
             raise NoMetroError("нет метро")
+        await self._maybe_hang()
         return [self._opt("metro")]
 
 
@@ -108,6 +115,31 @@ def test_route_failure_shows_schedule_without_times():
                               day=date(2026, 9, 24), now=datetime(2026, 9, 24, 7, tzinfo=TZ),
                               home_address="дом", transport="metro", buffer_min=10, for_today=False))
     assert view.route_failed and view.plan is None and view.schedule.count == 1
+
+
+def test_route_timeout_degrades_fast():
+    # 2GIS висит -> по route_timeout_s сборка уходит в route_failed, не дожидаясь ответа
+    import time
+    t0 = time.monotonic()
+    view = run(build_day_view(settings=S, schedule_client=_sched_one(), buildings=_store(),
+                              geocoder=FakeGeo(), routing=FakeRouting(hang=True), group="G",
+                              day=date(2026, 9, 24), now=datetime(2026, 9, 24, 7, tzinfo=TZ),
+                              home_address="дом", transport="metro", buffer_min=10, for_today=False,
+                              route_timeout_s=0.2))
+    assert view.route_failed and view.plan is None
+    assert time.monotonic() - t0 < 2  # быстро, не висит
+
+
+def test_need_route_false_skips_routing():
+    # вечерний пинг: дорога не нужна — 2GIS не дёргаем вообще
+    r = FakeRouting()
+    view = run(build_day_view(settings=S, schedule_client=_sched_one(), buildings=_store(),
+                              geocoder=FakeGeo(), routing=r, group="G",
+                              day=date(2026, 9, 24), now=datetime(2026, 9, 24, 7, tzinfo=TZ),
+                              home_address="дом", transport="metro", buffer_min=10, for_today=False,
+                              need_route=False))
+    assert r.calls == [] and view.plan is None and not view.route_failed
+    assert view.schedule.count == 1
 
 
 def test_frezer_cabinet_resolves_to_frezer():
